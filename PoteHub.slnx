@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="PoteHub.Api/PoteHub.Api.csproj" />
+  <Project Path="PoteHub.Database/PoteHub.Database.csproj" />
+  <Project Path="PoteHub.Discord/PoteHub.Discord.csproj" />
+  <Project Path="PoteHub.Domain/PoteHub.Domain.csproj" />
+  <Project Path="PoteHub.Tracker/PoteHub.Tracker.csproj" />
+</Solution>
