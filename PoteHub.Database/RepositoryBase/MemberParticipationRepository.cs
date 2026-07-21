@@ -193,4 +193,47 @@ public class MemberParticipationRepository : RepositoryBase
 
         await command.ExecuteNonQueryAsync();
     }
+    public async Task MarkRewardQualifiedAsync(
+    int seasonId,
+    int memberId,
+    int clanId,
+    DateTime qualifiedAt,
+    SqliteConnection connection,
+    SqliteTransaction transaction)
+    {
+        using SqliteCommand command =
+            connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText =
+        """
+    UPDATE MemberParticipations
+    SET RewardQualifiedAt =
+        COALESCE(
+            RewardQualifiedAt,
+            $qualifiedAt)
+    WHERE SeasonId = $seasonId
+      AND MemberId = $memberId
+      AND ClanId = $clanId;
+    """;
+
+        command.Parameters.AddWithValue(
+            "$seasonId",
+            seasonId);
+
+        command.Parameters.AddWithValue(
+            "$memberId",
+            memberId);
+
+        command.Parameters.AddWithValue(
+            "$clanId",
+            clanId);
+
+        command.Parameters.AddWithValue(
+            "$qualifiedAt",
+            qualifiedAt.ToString("O"));
+
+        await command.ExecuteNonQueryAsync();
+    }
 }

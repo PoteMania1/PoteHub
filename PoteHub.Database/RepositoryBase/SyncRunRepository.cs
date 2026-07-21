@@ -90,6 +90,8 @@ public class SyncRunRepository : RepositoryBase
         INSERT INTO SyncRuns
         (
             SeasonId,
+            DayId,
+            WaveId,
             ExecutedAt,
             GeneratedAt,
             ClanChanges,
@@ -101,6 +103,8 @@ public class SyncRunRepository : RepositoryBase
         VALUES
         (
             $seasonId,
+            $dayId,
+            $waveId,
             $executedAt,
             $generatedAt,
             0,
@@ -116,6 +120,14 @@ public class SyncRunRepository : RepositoryBase
         command.Parameters.AddWithValue(
             "$seasonId",
             syncRun.SeasonId);
+
+        command.Parameters.AddWithValue(
+            "$dayId",
+            syncRun.DayId);
+
+        command.Parameters.AddWithValue(
+            "$waveId",
+            syncRun.WaveId);
 
         command.Parameters.AddWithValue(
             "$executedAt",

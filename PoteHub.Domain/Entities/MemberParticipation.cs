@@ -13,4 +13,5 @@ public class MemberParticipation
     public bool IsActive { get; set; }
 
     public DateTime? LastSeenAt { get; set; }
+    public DateTime? RewardQualifiedAt { get; set; }
 }

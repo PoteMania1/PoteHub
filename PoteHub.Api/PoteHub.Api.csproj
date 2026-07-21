@@ -11,4 +11,8 @@
     <ProjectReference Include="..\PoteHub.Domain\PoteHub.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Serialization\" />
+  </ItemGroup>
+
 </Project>

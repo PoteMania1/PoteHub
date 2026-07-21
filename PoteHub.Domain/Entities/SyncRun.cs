@@ -6,6 +6,10 @@ public class SyncRun
 
     public int SeasonId { get; set; }
 
+    public long DayId { get; set; }
+
+    public long WaveId { get; set; }
+
     public DateTime ExecutedAt { get; set; }
 
     public DateTime GeneratedAt { get; set; }

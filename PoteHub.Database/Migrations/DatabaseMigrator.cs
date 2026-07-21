@@ -16,7 +16,9 @@ public class DatabaseMigrator
         _migrations =
         [
             new Migration001InitialSchema(),
-            new Migration002SyncMetadata()
+            new Migration002SyncMetadata(),
+            new Migration003Calendar(),
+            new Migration004Statistics()
         ];
     }
 
