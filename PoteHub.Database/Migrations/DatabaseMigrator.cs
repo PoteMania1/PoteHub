@@ -18,7 +18,9 @@ public class DatabaseMigrator
             new Migration001InitialSchema(),
             new Migration002SyncMetadata(),
             new Migration003Calendar(),
-            new Migration004Statistics()
+            new Migration004Statistics(),
+            new Migration005DiscordUsers(),
+            new Migration006DiscordPanels()
         ];
     }
 
