@@ -62,6 +62,8 @@ public class DatabaseInitializer
             MemberId INTEGER NOT NULL,
             ClanId INTEGER NOT NULL,
             Reputation INTEGER NOT NULL,
+            IsActive INTEGER NOT NULL DEFAULT 1,
+            LastSeenAt TEXT NULL,
 
             PRIMARY KEY (SeasonId, MemberId, ClanId),
 
@@ -117,6 +119,30 @@ public class DatabaseInitializer
             FOREIGN KEY (ClanId) REFERENCES Clans(ClanId)
         );
 
+                CREATE TABLE IF NOT EXISTS MemberMovements
+        (
+            MemberMovementId INTEGER PRIMARY KEY AUTOINCREMENT,
+            SyncRunId INTEGER NOT NULL,
+            SeasonId INTEGER NOT NULL,
+            MemberId INTEGER NOT NULL,
+            FromClanId INTEGER NULL,
+            ToClanId INTEGER NULL,
+            MovementType TEXT NOT NULL,
+            DetectedAt TEXT NOT NULL,
+
+            FOREIGN KEY (SyncRunId) REFERENCES SyncRuns(SyncRunId),
+            FOREIGN KEY (SeasonId) REFERENCES Seasons(SeasonId),
+            FOREIGN KEY (MemberId) REFERENCES Members(MemberId),
+            FOREIGN KEY (FromClanId) REFERENCES Clans(ClanId),
+            FOREIGN KEY (ToClanId) REFERENCES Clans(ClanId)
+        );
+
+        CREATE INDEX IF NOT EXISTS IX_MemberMovements_MemberId
+        ON MemberMovements(MemberId);
+
+        CREATE INDEX IF NOT EXISTS IX_MemberMovements_SyncRunId
+        ON MemberMovements(SyncRunId);
+
         CREATE INDEX IF NOT EXISTS IX_ClanChanges_ClanId
         ON ClanChanges(ClanId);
 
@@ -125,6 +151,16 @@ public class DatabaseInitializer
         CREATE INDEX IF NOT EXISTS IX_MemberChanges_ClanId
         ON MemberChanges(ClanId);
         """);
+
+        await AddColumnIfMissingAsync(
+        "MemberParticipations",
+        "IsActive",
+        "INTEGER NOT NULL DEFAULT 1");
+
+        await AddColumnIfMissingAsync(
+            "MemberParticipations",
+            "LastSeenAt",
+            "TEXT NULL");
 
         await AddColumnIfMissingAsync(
             "ClanChanges",

@@ -29,6 +29,7 @@ MemberParticipationRepository participationRepository = new(database);
 SyncRunRepository syncRunRepository = new(database);
 ClanChangeRepository clanChangeRepository = new(database);
 MemberChangeRepository memberChangeRepository = new(database);
+MemberMovementRepository movementRepository = new(database);
 
 Season season = SeasonMapper.ToDomain(response.Season);
 
@@ -36,6 +37,9 @@ int newClans = 0;
 int changedClans = 0;
 int newParticipations = 0;
 int changedParticipations = 0;
+int enteredMembers = 0;
+int changedClanMembers = 0;
+int missingMembers = 0;
 
 using SqliteConnection connection = database.CreateConnection();
 
@@ -62,6 +66,21 @@ try
         syncRun,
         connection,
         transaction);
+
+    List<MemberParticipation> activeParticipations =
+    await participationRepository.GetActiveBySeasonAsync(
+        season.SeasonId,
+        connection,
+        transaction);
+
+    Dictionary<int, List<MemberParticipation>> activeByMember =
+        activeParticipations
+            .GroupBy(p => p.MemberId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToList());
+
+    HashSet<(int MemberId, int ClanId)> seenParticipations = [];
 
     foreach (ClanResponse clanResponse in response.Clans)
     {
@@ -191,38 +210,98 @@ try
                 connection,
                 transaction);
 
-            MemberParticipation participation = new()
+            seenParticipations.Add(
+                (member.MemberId, clan.ClanId));
+
+            activeByMember.TryGetValue(
+                member.MemberId,
+                out List<MemberParticipation>? previousActiveList);
+
+            previousActiveList ??= [];
+
+            MemberParticipation? sameClanParticipation =
+                previousActiveList.FirstOrDefault(
+                    participation =>
+                        participation.ClanId == clan.ClanId &&
+                        participation.IsActive);
+
+            if (sameClanParticipation is null)
             {
-                SeasonId = season.SeasonId,
-                MemberId = member.MemberId,
-                ClanId = clan.ClanId,
-                Reputation = memberResponse.Reputation
-            };
+                MemberParticipation? previousClanParticipation =
+                    previousActiveList.FirstOrDefault(
+                        participation => participation.IsActive);
 
-            MemberParticipation? previousParticipation =
-                await participationRepository.GetAsync(
-                    season.SeasonId,
-                    member.MemberId,
-                    clan.ClanId,
-                    connection,
-                    transaction);
+                if (previousClanParticipation is null)
+                {
+                    enteredMembers++;
+                    newParticipations++;
 
-            if (previousParticipation is null)
-            {
-                newParticipations++;
+                    MemberMovement enteredMovement = new()
+                    {
+                        SyncRunId = syncRunId,
+                        SeasonId = season.SeasonId,
+                        MemberId = member.MemberId,
+                        FromClanId = null,
+                        ToClanId = clan.ClanId,
+                        MovementType = "EnteredClan",
+                        DetectedAt = syncDate
+                    };
 
-                Console.WriteLine(
-                    $"Nueva participación: {member.Name} → {clan.Name}");
+                    await movementRepository.SaveAsync(
+                        enteredMovement,
+                        connection,
+                        transaction);
+
+                    Console.WriteLine(
+                        $"Entrada: {member.Name} → {clan.Name}");
+                }
+                else
+                {
+                    changedClanMembers++;
+
+                    foreach (MemberParticipation previousParticipation
+                             in previousActiveList.Where(p => p.IsActive))
+                    {
+                        await participationRepository.DeactivateAsync(
+                            season.SeasonId,
+                            member.MemberId,
+                            previousParticipation.ClanId,
+                            connection,
+                            transaction);
+
+                        previousParticipation.IsActive = false;
+                    }
+
+                    MemberMovement movement = new()
+                    {
+                        SyncRunId = syncRunId,
+                        SeasonId = season.SeasonId,
+                        MemberId = member.MemberId,
+                        FromClanId = previousClanParticipation.ClanId,
+                        ToClanId = clan.ClanId,
+                        MovementType = "ChangedClan",
+                        DetectedAt = syncDate
+                    };
+
+                    await movementRepository.SaveAsync(
+                        movement,
+                        connection,
+                        transaction);
+
+                    Console.WriteLine(
+                        $"Cambio de clan: {member.Name} " +
+                        $"{previousClanParticipation.ClanId} → {clan.Name}");
+                }
             }
             else if (
-                previousParticipation.Reputation !=
-                participation.Reputation)
+                sameClanParticipation.Reputation !=
+                memberResponse.Reputation)
             {
                 changedParticipations++;
 
                 int reputationDifference =
-                    participation.Reputation -
-                    previousParticipation.Reputation;
+                    memberResponse.Reputation -
+                    sameClanParticipation.Reputation;
 
                 MemberChange change = new()
                 {
@@ -231,9 +310,9 @@ try
                     MemberId = member.MemberId,
                     ClanId = clan.ClanId,
                     PreviousReputation =
-                        previousParticipation.Reputation,
+                        sameClanParticipation.Reputation,
                     CurrentReputation =
-                        participation.Reputation,
+                        memberResponse.Reputation,
                     ReputationDifference =
                         reputationDifference,
                     DetectedAt = syncDate
@@ -249,11 +328,65 @@ try
                     $"{reputationDifference:+#;-#;0}");
             }
 
+            MemberParticipation currentParticipation = new()
+            {
+                SeasonId = season.SeasonId,
+                MemberId = member.MemberId,
+                ClanId = clan.ClanId,
+                Reputation = memberResponse.Reputation,
+                IsActive = true,
+                LastSeenAt = syncDate
+            };
+
             await participationRepository.SaveAsync(
-                participation,
+                currentParticipation,
                 connection,
                 transaction);
         }
+
+        /*foreach (MemberParticipation previousParticipation
+             in activeParticipations)
+        {
+            bool wasSeen = seenParticipations.Contains(
+                (
+                    previousParticipation.MemberId,
+                    previousParticipation.ClanId
+                ));
+
+            if (wasSeen || !previousParticipation.IsActive)
+            {
+                continue;
+            }
+
+            await participationRepository.DeactivateAsync(
+                previousParticipation.SeasonId,
+                previousParticipation.MemberId,
+                previousParticipation.ClanId,
+                connection,
+                transaction);
+
+            MemberMovement missingMovement = new()
+            {
+                SyncRunId = syncRunId,
+                SeasonId = season.SeasonId,
+                MemberId = previousParticipation.MemberId,
+                FromClanId = previousParticipation.ClanId,
+                ToClanId = null,
+                MovementType = "MissingFromApi",
+                DetectedAt = syncDate
+            };
+
+            await movementRepository.SaveAsync(
+                missingMovement,
+                connection,
+                transaction);
+
+            missingMembers++;
+
+            Console.WriteLine(
+                $"Ya no aparece en la API: miembro " +
+                $"{previousParticipation.MemberId}");
+        }*/
     }
 
     await syncRunRepository.UpdateTotalsAsync(
@@ -277,3 +410,6 @@ Console.WriteLine($"Clanes nuevos: {newClans}");
 Console.WriteLine($"Clanes modificados: {changedClans}");
 Console.WriteLine($"Participaciones nuevas: {newParticipations}");
 Console.WriteLine($"Participaciones modificadas: {changedParticipations}");
+Console.WriteLine($"Entradas a clanes: {enteredMembers}");
+Console.WriteLine($"Cambios de clan: {changedClanMembers}");
+Console.WriteLine($"Ausentes en la API: {missingMembers}");
