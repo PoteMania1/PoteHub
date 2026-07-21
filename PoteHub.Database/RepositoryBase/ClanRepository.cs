@@ -46,4 +46,44 @@ public class ClanRepository : RepositoryBase
 
         await command.ExecuteNonQueryAsync();
     }
+
+    public async Task<Clan?> GetByIdAsync(
+    int clanId,
+    SqliteConnection connection,
+    SqliteTransaction transaction)
+    {
+        using SqliteCommand command =
+            connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText =
+        """
+    SELECT
+        ClanId,
+        Name,
+        MasterName
+    FROM Clans
+    WHERE ClanId = $clanId;
+    """;
+
+        command.Parameters.AddWithValue(
+            "$clanId",
+            clanId);
+
+        using SqliteDataReader reader =
+            await command.ExecuteReaderAsync();
+
+        if (!await reader.ReadAsync())
+        {
+            return null;
+        }
+
+        return new Clan
+        {
+            ClanId = reader.GetInt32(0),
+            Name = reader.GetString(1),
+            MasterName = reader.GetString(2)
+        };
+    }
 }

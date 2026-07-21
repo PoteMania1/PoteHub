@@ -7,6 +7,7 @@ using PoteHub.Database.Initialization;
 using PoteHub.Database.RepositoryBase;
 using PoteHub.Domain.Entities;
 using System.Text;
+using System.Globalization;
 
 Console.OutputEncoding = Encoding.UTF8;
 
@@ -16,7 +17,18 @@ NinjaSagaApiClient apiClient = new();
 
 ApiResponse response = await apiClient.GetClanRankingsAsync();
 
-DatabaseConnection database = new("potehub.db");
+string dataDirectory = Path.Combine(
+    Environment.GetFolderPath(
+        Environment.SpecialFolder.LocalApplicationData),
+    "PoteHub");
+
+string databasePath = Path.Combine(
+    dataDirectory,
+    "potehub.db");
+
+DatabaseConnection database = new(databasePath);
+
+Console.WriteLine($"Base de datos: {databasePath}");
 
 DatabaseInitializer initializer = new(database);
 await initializer.InitializeAsync();
@@ -32,6 +44,91 @@ MemberChangeRepository memberChangeRepository = new(database);
 MemberMovementRepository movementRepository = new(database);
 
 Season season = SeasonMapper.ToDomain(response.Season);
+
+DateTime generatedAt = DateTime.SpecifyKind(
+    DateTime.ParseExact(
+        response.GeneratedAt,
+        "yyyy-MM-dd HH:mm:ss",
+        CultureInfo.InvariantCulture),
+    DateTimeKind.Utc);
+
+List<int> duplicatedClanIds = response.Clans
+    .GroupBy(clan => clan.Id)
+    .Where(group => group.Count() > 1)
+    .Select(group => group.Key)
+    .ToList();
+
+if (duplicatedClanIds.Count > 0)
+{
+    throw new InvalidDataException(
+        "La API devolvió IDs de clan duplicados: " +
+        string.Join(", ", duplicatedClanIds));
+}
+
+var apiMembers = response.Clans
+    .SelectMany(
+        clan => clan.MemberList.Select(
+            member => new
+            {
+                ClanId = clan.Id,
+                ClanName = clan.Name,
+                MemberId = member.Id,
+                MemberName = member.Name
+            }))
+    .ToList();
+
+var duplicatedMemberRows = apiMembers
+    .GroupBy(item => new
+    {
+        item.ClanId,
+        item.MemberId
+    })
+    .Where(group => group.Count() > 1)
+    .ToList();
+
+if (duplicatedMemberRows.Count > 0)
+{
+    string examples = string.Join(
+        ", ",
+        duplicatedMemberRows
+            .Take(10)
+            .Select(group =>
+                $"miembro {group.Key.MemberId} " +
+                $"en clan {group.Key.ClanId}"));
+
+    throw new InvalidDataException(
+        "La API devolvió miembros duplicados dentro " +
+        $"del mismo clan: {examples}");
+}
+
+var membersInMultipleClans = apiMembers
+    .GroupBy(item => item.MemberId)
+    .Select(group => new
+    {
+        MemberId = group.Key,
+        MemberName = group.First().MemberName,
+        Clans = group
+            .Select(item => item.ClanId)
+            .Distinct()
+            .ToList()
+    })
+    .Where(item => item.Clans.Count > 1)
+    .ToList();
+
+if (membersInMultipleClans.Count > 0)
+{
+    string examples = string.Join(
+        ", ",
+        membersInMultipleClans
+            .Take(10)
+            .Select(item =>
+                $"{item.MemberName} ({item.MemberId}) " +
+                $"en clanes {string.Join("/", item.Clans)}"));
+
+    throw new InvalidDataException(
+        "La API devolvió el mismo MemberId en varios " +
+        $"clanes: {examples}");
+}
 
 int newClans = 0;
 int changedClans = 0;
@@ -54,12 +151,37 @@ try
         connection,
         transaction);
 
+    bool isInitialSync =
+    !await syncRunRepository.HasAnyBySeasonAsync(
+        season.SeasonId,
+        connection,
+        transaction);
+
+    bool alreadyProcessed =
+        await syncRunRepository.ExistsByGeneratedAtAsync(
+            season.SeasonId,
+            generatedAt,
+            connection,
+            transaction);
+
+    if (alreadyProcessed)
+    {
+        await transaction.RollbackAsync();
+
+        Console.WriteLine(
+            $"La respuesta {response.GeneratedAt} " +
+            "ya había sido procesada.");
+
+        return;
+    }
+
     DateTime syncDate = DateTime.UtcNow;
 
     SyncRun syncRun = new()
     {
         SeasonId = season.SeasonId,
-        ExecutedAt = syncDate
+        ExecutedAt = syncDate,
+        GeneratedAt = generatedAt
     };
 
     long syncRunId = await syncRunRepository.CreateAsync(
@@ -72,6 +194,7 @@ try
         season.SeasonId,
         connection,
         transaction);
+
 
     Dictionary<int, List<MemberParticipation>> activeByMember =
         activeParticipations
@@ -233,31 +356,45 @@ try
 
                 if (previousClanParticipation is null)
                 {
-                    enteredMembers++;
                     newParticipations++;
 
-                    MemberMovement enteredMovement = new()
+                    if (!isInitialSync)
                     {
-                        SyncRunId = syncRunId,
-                        SeasonId = season.SeasonId,
-                        MemberId = member.MemberId,
-                        FromClanId = null,
-                        ToClanId = clan.ClanId,
-                        MovementType = "EnteredClan",
-                        DetectedAt = syncDate
-                    };
+                        enteredMembers++;
 
-                    await movementRepository.SaveAsync(
-                        enteredMovement,
-                        connection,
-                        transaction);
+                        MemberMovement enteredMovement = new()
+                        {
+                            SyncRunId = syncRunId,
+                            SeasonId = season.SeasonId,
+                            MemberId = member.MemberId,
+                            FromClanId = null,
+                            ToClanId = clan.ClanId,
+                            MovementType = "EnteredClan",
+                            DetectedAt = syncDate
+                        };
 
-                    Console.WriteLine(
-                        $"Entrada: {member.Name} → {clan.Name}");
+                        await movementRepository.SaveAsync(
+                            enteredMovement,
+                            connection,
+                            transaction);
+
+                        Console.WriteLine(
+                            $"Entrada: {member.Name} → {clan.Name}");
+                    }
                 }
                 else
                 {
                     changedClanMembers++;
+
+                    Clan? previousClanEntity =
+                    await clanRepository.GetByIdAsync(
+                    previousClanParticipation.ClanId,
+                    connection,
+                    transaction);
+
+                    string previousClanName =
+                        previousClanEntity?.Name ??
+                        $"Clan {previousClanParticipation.ClanId}";
 
                     foreach (MemberParticipation previousParticipation
                              in previousActiveList.Where(p => p.IsActive))
@@ -290,7 +427,7 @@ try
 
                     Console.WriteLine(
                         $"Cambio de clan: {member.Name} " +
-                        $"{previousClanParticipation.ClanId} → {clan.Name}");
+                        $"{previousClanName} → {clan.Name}");
                 }
             }
             else if (
@@ -390,11 +527,14 @@ try
     }
 
     await syncRunRepository.UpdateTotalsAsync(
-        syncRunId,
-        changedClans,
-        changedParticipations,
-        connection,
-        transaction);
+    syncRunId,
+    changedClans,
+    changedParticipations,
+    enteredMembers,
+    changedClanMembers,
+    missingMembers,
+    connection,
+    transaction);
 
     await transaction.CommitAsync();
 }

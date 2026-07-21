@@ -8,7 +8,22 @@ public class DatabaseConnection
 
     public DatabaseConnection(string databasePath)
     {
-        _connectionString = $"Data Source={databasePath}";
+        string? directory = Path.GetDirectoryName(databasePath);
+
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        SqliteConnectionStringBuilder builder = new()
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            ForeignKeys = true,
+            Pooling = true
+        };
+
+        _connectionString = builder.ToString();
     }
 
     public SqliteConnection CreateConnection()
