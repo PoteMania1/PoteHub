@@ -1,4 +1,7 @@
-﻿namespace PoteHub.Api.Clients;
+﻿using System.Text.Json;
+using PoteHub.Api.Models;
+
+namespace PoteHub.Api.Clients;
 
 public class NinjaSagaApiClient
 {
@@ -10,5 +13,28 @@ public class NinjaSagaApiClient
     public NinjaSagaApiClient()
     {
         _httpClient = new HttpClient();
+    }
+
+    public async Task<string> GetClanRankingsJsonAsync()
+    {
+        string json = await _httpClient.GetStringAsync(ClanRankingUrl);
+
+        return json;
+    }
+
+    public async Task<ApiResponse> GetClanRankingsAsync()
+    {
+        string json = await GetClanRankingsJsonAsync();
+
+        ApiResponse? response =
+            JsonSerializer.Deserialize<ApiResponse>(json);
+
+        if (response is null)
+        {
+            throw new InvalidOperationException(
+                "No se pudo convertir la respuesta de la API.");
+        }
+
+        return response;
     }
 }
