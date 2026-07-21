@@ -447,6 +447,202 @@ public class DiscordPanelRepository
         return data;
     }
 
+    public async Task<MemberRankingPanelData?>
+    GetCurrentMemberRankingAsync(
+        int clanId,
+        int limit)
+    {
+        using SqliteConnection connection =
+            Database.CreateConnection();
+
+        await connection.OpenAsync();
+
+        ClanRankingPanelData? currentWave =
+            await GetCurrentWaveAsync(connection);
+
+        if (currentWave is null)
+        {
+            return null;
+        }
+
+        string? clanName =
+            await GetClanNameAsync(clanId);
+
+        if (clanName is null)
+        {
+            return null;
+        }
+
+        MemberRankingPanelData data = new()
+        {
+            SeasonId = currentWave.SeasonId,
+            SeasonName = currentWave.SeasonName,
+            DayId = currentWave.DayId,
+            DayNumber = currentWave.DayNumber,
+            WaveId = currentWave.WaveId,
+            WaveNumber = currentWave.WaveNumber,
+            WaveStartTime =
+                currentWave.WaveStartTime,
+            WaveEndTime =
+                currentWave.WaveEndTime,
+            WaveStatus =
+                currentWave.WaveStatus,
+            LastUpdatedAt =
+                currentWave.LastUpdatedAt,
+            ClanId = clanId,
+            ClanName = clanName
+        };
+
+        using SqliteCommand command =
+            connection.CreateCommand();
+
+        command.CommandText =
+        """
+    WITH WaveTotals AS
+    (
+        SELECT
+            mc.MemberId,
+            mc.ClanId,
+
+            SUM
+            (
+                CASE
+                    WHEN mc.ReputationDifference > 0
+                    THEN mc.ReputationDifference
+                    ELSE 0
+                END
+            ) AS ReputationGain,
+
+            SUM
+            (
+                CASE
+                    WHEN mc.ReputationDifference < 0
+                    THEN ABS(mc.ReputationDifference)
+                    ELSE 0
+                END
+            ) AS ReputationDeduction,
+
+            SUM(
+                mc.ReputationDifference
+            ) AS NetReputation
+
+        FROM MemberChanges mc
+
+        JOIN SyncRuns sr
+            ON sr.SyncRunId = mc.SyncRunId
+
+        WHERE sr.WaveId = $waveId
+          AND mc.ClanId = $clanId
+
+        GROUP BY
+            mc.MemberId,
+            mc.ClanId
+    ),
+
+    RankedMembers AS
+    (
+        SELECT
+            RANK() OVER
+            (
+                ORDER BY
+                    p.Reputation DESC
+            ) AS MemberRank,
+
+            m.MemberId,
+            m.Name,
+            m.Level,
+            p.Reputation,
+
+            COALESCE(
+                wt.ReputationGain,
+                0
+            ) AS WaveGain,
+
+            COALESCE(
+                wt.ReputationDeduction,
+                0
+            ) AS WaveDeduction,
+
+            COALESCE(
+                wt.NetReputation,
+                0
+            ) AS WaveNet
+
+        FROM MemberParticipations p
+
+        JOIN Members m
+            ON m.MemberId = p.MemberId
+
+        LEFT JOIN WaveTotals wt
+            ON wt.MemberId = p.MemberId
+           AND wt.ClanId = p.ClanId
+
+        WHERE p.SeasonId = $seasonId
+          AND p.ClanId = $clanId
+          AND p.IsActive = 1
+    )
+
+    SELECT
+        MemberRank,
+        MemberId,
+        Name,
+        Level,
+        Reputation,
+        WaveGain,
+        WaveDeduction,
+        WaveNet
+
+    FROM RankedMembers
+
+    ORDER BY
+        MemberRank,
+        MemberId
+
+    LIMIT $limit;
+    """;
+
+        command.Parameters.AddWithValue(
+            "$waveId",
+            data.WaveId);
+
+        command.Parameters.AddWithValue(
+            "$seasonId",
+            data.SeasonId);
+
+        command.Parameters.AddWithValue(
+            "$clanId",
+            clanId);
+
+        command.Parameters.AddWithValue(
+            "$limit",
+            limit);
+
+        using SqliteDataReader reader =
+            await command.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            data.Members.Add(
+                new MemberRankingPanelEntry
+                {
+                    Rank = reader.GetInt32(0),
+                    MemberId = reader.GetInt32(1),
+                    MemberName = reader.GetString(2),
+                    Level = reader.GetInt32(3),
+                    TotalReputation =
+                        reader.GetInt32(4),
+                    WaveReputationGain =
+                        reader.GetInt32(5),
+                    WaveReputationDeduction =
+                        reader.GetInt32(6),
+                    WaveNetReputation =
+                        reader.GetInt32(7)
+                });
+        }
+
+        return data;
+    }
+
     private static async Task
         <ClanRankingPanelData?>
         GetCurrentWaveAsync(

@@ -129,14 +129,20 @@ public class DiscordPanelService
             cancellationToken
                 .ThrowIfCancellationRequested();
 
-            if (panel.PanelType != ClanRanking)
+            switch (panel.PanelType)
             {
-                continue;
-            }
+                case ClanRanking:
+                    await UpdateClanRankingAsync(
+                        client,
+                        panel);
+                    break;
 
-            await UpdateClanRankingAsync(
-                client,
-                panel);
+                case HomeClanMembers:
+                    await UpdateHomeClanMembersAsync(
+                        client,
+                        panel);
+                    break;
+            }
         }
     }
 
@@ -228,6 +234,111 @@ public class DiscordPanelService
 
         Console.WriteLine(
             $"Nuevo panel Top 10 publicado: " +
+            $"día {data.DayNumber}, " +
+            $"wave {data.WaveNumber}.");
+    }
+
+    private async Task UpdateHomeClanMembersAsync(
+    DiscordSocketClient client,
+    DiscordPanel panel)
+    {
+        if (panel.ClanId is null)
+        {
+            Console.WriteLine(
+                $"El panel {panel.PanelId} no tiene " +
+                "un clan configurado.");
+
+            return;
+        }
+
+        MemberRankingPanelData? data =
+            await _repository
+                .GetCurrentMemberRankingAsync(
+                    panel.ClanId.Value,
+                    limit: 25);
+
+        if (data is null ||
+            data.Members.Count == 0)
+        {
+            return;
+        }
+
+        if (!ulong.TryParse(
+            panel.ChannelId,
+            out ulong channelId))
+        {
+            Console.WriteLine(
+                $"Canal inválido para el panel " +
+                $"{panel.PanelId}.");
+
+            return;
+        }
+
+        SocketTextChannel? channel =
+            client.GetChannel(channelId)
+                as SocketTextChannel;
+
+        if (channel is null)
+        {
+            Console.WriteLine(
+                $"No se encontró el canal " +
+                $"{panel.ChannelId}.");
+
+            return;
+        }
+
+        Embed embed =
+            BuildMemberRankingEmbed(data);
+
+        DiscordPanelMessage? currentMessage =
+            await _repository
+                .GetCurrentMessageAsync(
+                    panel.PanelId);
+
+        if (currentMessage is not null &&
+            currentMessage.WaveId ==
+                data.WaveId)
+        {
+            bool updated =
+                await TryUpdateMessageAsync(
+                    channel,
+                    currentMessage.MessageId,
+                    embed);
+
+            if (updated)
+            {
+                return;
+            }
+
+            Console.WriteLine(
+                $"El mensaje " +
+                $"{currentMessage.MessageId} " +
+                "ya no existe. Se creará nuevamente.");
+        }
+
+        IUserMessage newMessage =
+            await channel.SendMessageAsync(
+                embed: embed);
+
+        await _repository.SaveCurrentMessageAsync(
+            panel.PanelId,
+            data.SeasonId,
+            data.DayId,
+            data.WaveId,
+            newMessage.Id.ToString());
+
+        if (currentMessage is not null &&
+            currentMessage.WaveId !=
+                data.WaveId)
+        {
+            await TryFinalizePreviousMessageAsync(
+                channel,
+                currentMessage.MessageId);
+        }
+
+        Console.WriteLine(
+            $"Nuevo panel de miembros publicado: " +
+            $"{data.ClanName}, " +
             $"día {data.DayNumber}, " +
             $"wave {data.WaveNumber}.");
     }
@@ -393,6 +504,98 @@ public class DiscordPanelService
             .Build();
     }
 
+    private static Embed BuildMemberRankingEmbed(
+    MemberRankingPanelData data)
+    {
+        StringBuilder description = new();
+
+        foreach (MemberRankingPanelEntry member
+                 in data.Members)
+        {
+            string position =
+                member.Rank switch
+                {
+                    1 => "🥇",
+                    2 => "🥈",
+                    3 => "🥉",
+                    _ => $"`{member.Rank,2}.`"
+                };
+
+            string waveChange =
+                FormatSignedNumber(
+                    member.WaveNetReputation);
+
+            string rewardStatus =
+                member.TotalReputation >= 10000
+                    ? "✅"
+                    : "⏳";
+
+            description.AppendLine(
+                $"{position} {rewardStatus} " +
+                $"**{member.MemberName}**");
+
+            description.AppendLine(
+                $"Rep: `{member.TotalReputation:N0}` " +
+                $"• Wave: `{waveChange}` " +
+                $"• Nv. `{member.Level}`");
+
+            if (member.WaveReputationDeduction > 0)
+            {
+                description.AppendLine(
+                    $"Deducción en wave: " +
+                    $"`-{member.WaveReputationDeduction:N0}`");
+            }
+
+            description.AppendLine();
+        }
+
+        string status =
+            TranslateWaveStatus(
+                data.WaveStatus);
+
+        return new EmbedBuilder()
+            .WithTitle(
+                $"🥷 Ranking de {data.ClanName}")
+
+            .WithDescription(
+                description.ToString())
+
+            .WithColor(
+                Color.Blue)
+
+            .AddField(
+                "Periodo",
+                $"Día {data.DayNumber} • " +
+                $"Wave {data.WaveNumber}",
+                inline: true)
+
+            .AddField(
+                "Horario",
+                $"{data.WaveStartTime:HH:mm} – " +
+                $"{data.WaveEndTime:HH:mm} " +
+                "(servidor)",
+                inline: true)
+
+            .AddField(
+                "Estado",
+                status,
+                inline: true)
+
+            .AddField(
+                "Referencia",
+                "✅ Alcanzó 10.000 de reputación\n" +
+                "⏳ Todavía no alcanzó 10.000",
+                inline: false)
+
+            .WithFooter(
+                $"{data.SeasonName} • " +
+                $"Actualizado " +
+                $"{data.LastUpdatedAt:HH:mm:ss}")
+
+            .WithCurrentTimestamp()
+
+            .Build();
+    }
     private static string FormatSignedNumber(
         int value)
     {

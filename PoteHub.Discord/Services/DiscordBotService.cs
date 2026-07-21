@@ -60,9 +60,6 @@ public class DiscordBotService
         await _client.StopAsync();
         await _client.LogoutAsync();
 
-        await _client.StopAsync();
-        await _client.LogoutAsync();
-
         await _client.DisposeAsync();
     }
 
@@ -167,27 +164,19 @@ public class DiscordBotService
 
         foreach (SocketGuild guild in _client.Guilds)
         {
-            await _client.Rest.CreateGuildCommand(
-            linkCommand.Build(),
-            guild.Id);
+            ApplicationCommandProperties[] commands =
+            [
+                pingCommand.Build(),
+                linkCommand.Build(),
+                myCharacterCommand.Build(),
+                configurePanelCommand.Build()
+            ];
+
+            await guild.BulkOverwriteApplicationCommandAsync(
+                commands);
 
             Console.WriteLine(
-                $"Comando /vincular registrado en " +
-                $"{guild.Name}.");
-
-            await _client.Rest.CreateGuildCommand(
-            myCharacterCommand.Build(),
-            guild.Id);
-
-            Console.WriteLine(
-                $"Comando /mi-personaje registrado en " +
-                $"{guild.Name}.");
-            await _client.Rest.CreateGuildCommand(
-            configurePanelCommand.Build(),
-            guild.Id);
-
-            Console.WriteLine(
-                $"Comando /configurar-panel registrado " +
+                $"Comandos de PoteHub sincronizados " +
                 $"en {guild.Name}.");
         }
 
