@@ -23,6 +23,13 @@ public class DiscordBotService
 
     private readonly DiscordPanelRepository
         _panelRepository;
+    private readonly DiscordWaveReportRepository
+    _waveReportRepository;
+
+    private readonly DiscordWaveReportService
+        _waveReportService;
+
+    private Task? _waveReportTask;
     private Task? _panelUpdaterTask;
     private CancellationToken
         _shutdownToken;
@@ -59,6 +66,18 @@ public class DiscordBotService
             try
             {
                 await _panelUpdaterTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Finalización normal.
+            }
+        }
+
+        if (_waveReportTask is not null)
+        {
+            try
+            {
+                await _waveReportTask;
             }
             catch (OperationCanceledException)
             {
@@ -242,6 +261,44 @@ public class DiscordBotService
             isRequired: true,
             minValue: 1);
 
+        SlashCommandBuilder publishCharacterCommand =
+    new()
+    {
+        Name = "publicar-mi-personaje",
+        Description =
+            "Publica el panel fijo Ver mi personaje."
+    };
+
+        publishCharacterCommand.AddOption(
+            name: "canal",
+            type: ApplicationCommandOptionType.Channel,
+            description:
+                "Canal donde se publicará el panel",
+            isRequired: true);
+
+        SlashCommandBuilder configureReportsCommand =
+            new()
+            {
+                Name = "configurar-reportes",
+                Description =
+                    "Configura los reportes automáticos."
+            };
+
+        configureReportsCommand.AddOption(
+            name: "canal",
+            type: ApplicationCommandOptionType.Channel,
+            description:
+                "Canal de reportes",
+            isRequired: true);
+
+        configureReportsCommand.AddOption(
+            name: "clan_id",
+            type: ApplicationCommandOptionType.Integer,
+            description:
+                "ID del clan que se incluirá",
+            isRequired: true,
+            minValue: 1);
+
         foreach (SocketGuild guild in _client.Guilds)
         {
             ApplicationCommandProperties[] commands =
@@ -252,7 +309,9 @@ public class DiscordBotService
                 configurePanelCommand.Build(),
                 rankingCommand.Build(),
                 compareCommand.Build(),
-                stopComparisonCommand.Build()
+                stopComparisonCommand.Build(),
+                publishCharacterCommand.Build(),
+                configureReportsCommand.Build(),
             ];
 
             await guild.BulkOverwriteApplicationCommandAsync(
@@ -267,6 +326,14 @@ public class DiscordBotService
         {
             _panelUpdaterTask =
                 _panelService.RunUpdaterAsync(
+                    _client,
+                    _shutdownToken);
+        }
+
+        if (_waveReportTask is null)
+        {
+            _waveReportTask =
+                _waveReportService.RunAsync(
                     _client,
                     _shutdownToken);
         }
@@ -298,6 +365,12 @@ public class DiscordBotService
 
         _panelRepository =
             new DiscordPanelRepository(database);
+        _waveReportRepository =
+        new DiscordWaveReportRepository(database);
+
+        _waveReportService =
+            new DiscordWaveReportService(
+                _waveReportRepository);
         _discordUserRepository =
         new DiscordUserRepository(database);
         _panelService =
@@ -338,6 +411,15 @@ public class DiscordBotService
 
                 case "detener-seguimiento":
                     await HandleStopComparisonAsync(
+                        command);
+                    break;
+                case "publicar-mi-personaje":
+                    await HandlePublishCharacterAsync(
+                        command);
+                    break;
+
+                case "configurar-reportes":
+                    await HandleConfigureReportsAsync(
                         command);
                     break;
             }
@@ -544,6 +626,150 @@ public class DiscordBotService
             "El tipo de panel no es válido.",
             ephemeral: true);
     }
+
+    private async Task HandlePublishCharacterAsync(
+    SocketSlashCommand command)
+    {
+        if (command.User is not SocketGuildUser
+            guildUser)
+        {
+            await command.RespondAsync(
+                "Este comando solamente funciona " +
+                "dentro de un servidor.",
+                ephemeral: true);
+
+            return;
+        }
+
+        if (!guildUser.GuildPermissions
+            .ManageGuild)
+        {
+            await command.RespondAsync(
+                "Necesitás el permiso Administrar " +
+                "servidor.",
+                ephemeral: true);
+
+            return;
+        }
+
+        SocketSlashCommandDataOption? channelOption =
+            command.Data.Options.FirstOrDefault(
+                option => option.Name == "canal");
+
+        if (channelOption?.Value
+            is not SocketTextChannel channel)
+        {
+            await command.RespondAsync(
+                "Debés elegir un canal de texto.",
+                ephemeral: true);
+
+            return;
+        }
+
+        Embed embed =
+            new EmbedBuilder()
+                .WithTitle(
+                    "🥷 Información de tu personaje")
+                .WithDescription(
+                    "Presioná el botón para consultar " +
+                    "tu personaje vinculado.\n\n" +
+                    "La respuesta será privada y " +
+                    "solamente podrás verla vos.")
+                .WithColor(Color.Purple)
+                .WithFooter("PoteHub")
+                .Build();
+
+        MessageComponent components =
+            new ComponentBuilder()
+                .WithButton(
+                    label: "Ver mi personaje",
+                    customId: "show_my_character",
+                    style: ButtonStyle.Primary,
+                    emote: new Emoji("🥷"))
+                .Build();
+
+        await channel.SendMessageAsync(
+            embed: embed,
+            components: components);
+
+        await command.RespondAsync(
+            $"✅ Panel publicado en " +
+            $"{channel.Mention}.",
+            ephemeral: true);
+    }
+
+    private async Task HandleConfigureReportsAsync(
+        SocketSlashCommand command)
+    {
+        if (command.User is not SocketGuildUser
+            guildUser)
+        {
+            await command.RespondAsync(
+                "Este comando solamente funciona " +
+                "dentro de un servidor.",
+                ephemeral: true);
+
+            return;
+        }
+
+        if (!guildUser.GuildPermissions
+            .ManageGuild)
+        {
+            await command.RespondAsync(
+                "Necesitás el permiso Administrar " +
+                "servidor.",
+                ephemeral: true);
+
+            return;
+        }
+
+        SocketSlashCommandDataOption? channelOption =
+            command.Data.Options.FirstOrDefault(
+                option => option.Name == "canal");
+
+        SocketSlashCommandDataOption? clanOption =
+            command.Data.Options.FirstOrDefault(
+                option => option.Name == "clan_id");
+
+        if (channelOption?.Value
+            is not SocketTextChannel channel ||
+            clanOption?.Value is null)
+        {
+            await command.RespondAsync(
+                "Tenés que indicar un canal y un clan.",
+                ephemeral: true);
+
+            return;
+        }
+
+        int clanId =
+            Convert.ToInt32(clanOption.Value);
+
+        string? clanName =
+            await _panelRepository
+                .GetClanNameAsync(clanId);
+
+        if (clanName is null)
+        {
+            await command.RespondAsync(
+                $"No existe un clan con ID {clanId}.",
+                ephemeral: true);
+
+            return;
+        }
+
+        await _waveReportRepository.ConfigureAsync(
+            guildUser.Guild.Id.ToString(),
+            channel.Id.ToString(),
+            clanId);
+
+        await command.RespondAsync(
+            $"✅ Los reportes de **{clanName}** " +
+            $"se publicarán en {channel.Mention} " +
+            $"al terminar cada wave.",
+            ephemeral: true);
+    }
+
     private async Task HandleMyCharacterAsync(
     SocketSlashCommand command)
     {
@@ -712,44 +938,71 @@ public class DiscordBotService
     private async Task OnButtonExecutedAsync(
     SocketMessageComponent component)
     {
-        if (component.Data.CustomId !=
-            "refresh_my_character")
-        {
-            return;
-        }
-
         try
         {
-            string discordId =
-                component.User.Id.ToString();
-
-            MemberProfile? profile =
-                await _discordUserRepository
-                    .GetProfileAsync(discordId);
-
-            if (profile is null)
+            if (component.Data.CustomId ==
+                "show_my_character")
             {
+                string discordId =
+                    component.User.Id.ToString();
+
+                MemberProfile? profile =
+                    await _discordUserRepository
+                        .GetProfileAsync(discordId);
+
+                if (profile is null)
+                {
+                    await component.RespondAsync(
+                        "No tenés ningún personaje " +
+                        "vinculado.\nUsá `/vincular`.",
+                        ephemeral: true);
+
+                    return;
+                }
+
                 await component.RespondAsync(
-                    "No tenés ningún personaje " +
-                    "vinculado.",
+                    embed: BuildProfileEmbed(profile),
+                    components:
+                        BuildProfileComponents(),
                     ephemeral: true);
 
                 return;
             }
 
-            Embed embed =
-                BuildProfileEmbed(profile);
+            if (component.Data.CustomId ==
+                "refresh_my_character")
+            {
+                string discordId =
+                    component.User.Id.ToString();
 
-            MessageComponent components =
-                BuildProfileComponents();
+                MemberProfile? profile =
+                    await _discordUserRepository
+                        .GetProfileAsync(discordId);
 
-            await component.UpdateAsync(
-                properties =>
+                if (profile is null)
                 {
-                    properties.Embed = embed;
-                    properties.Components =
-                        components;
-                });
+                    await component.RespondAsync(
+                        "No tenés ningún personaje " +
+                        "vinculado.",
+                        ephemeral: true);
+
+                    return;
+                }
+
+                Embed embed =
+                    BuildProfileEmbed(profile);
+
+                MessageComponent components =
+                    BuildProfileComponents();
+
+                await component.UpdateAsync(
+                    properties =>
+                    {
+                        properties.Embed = embed;
+                        properties.Components =
+                            components;
+                    });
+            }
         }
         catch (Exception exception)
         {
@@ -758,7 +1011,7 @@ public class DiscordBotService
             if (!component.HasResponded)
             {
                 await component.RespondAsync(
-                    "No pude actualizar la información.",
+                    "No se pudo actualizar la información.",
                     ephemeral: true);
             }
         }

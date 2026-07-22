@@ -21,7 +21,8 @@ public class DatabaseMigrator
             new Migration004Statistics(),
             new Migration005DiscordUsers(),
             new Migration006DiscordPanels(),
-            new Migration007ClanComparisons()
+            new Migration007ClanComparisons(),
+            new Migration008DiscordAutomation()
         ];
     }
 

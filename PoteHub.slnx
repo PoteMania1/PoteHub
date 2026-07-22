@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/Elementos de la solución/">
+    <File Path="Start-PoteHub.ps1" />
+  </Folder>
   <Project Path="PoteHub.Api/PoteHub.Api.csproj" />
   <Project Path="PoteHub.Database/PoteHub.Database.csproj" />
   <Project Path="PoteHub.Discord/PoteHub.Discord.csproj" />
