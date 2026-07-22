@@ -80,8 +80,12 @@ while (!cancellation.IsCancellationRequested)
             "Descargando información...");
 
         SyncResult result =
-            await syncService.RunAsync(
-                cancellation.Token);
+        await syncService.RunAsync(
+        cancellation.Token);
+
+        Console.WriteLine(
+            $"Generado por el servidor: " +
+            $"{result.GeneratedAt}");
 
         ConsoleSyncReporter.Print(result);
 

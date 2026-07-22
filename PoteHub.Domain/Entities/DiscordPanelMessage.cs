@@ -15,6 +15,12 @@ public class DiscordPanelMessage
     public string MessageId { get; set; } =
         string.Empty;
 
+    public string? SecondaryMessageId
+    {
+        get;
+        set;
+    }
+
     public bool IsCurrent { get; set; }
 
     public DateTime CreatedAt { get; set; }

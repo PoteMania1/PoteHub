@@ -706,7 +706,7 @@ public class DiscordPanelRepository
       AND sr.GeneratedAt IS NOT NULL
 
     ORDER BY
-        sr.GeneratedAt DESC
+        sr.SyncRunId DESC
 
     LIMIT 1;
     """;
@@ -766,6 +766,7 @@ public class DiscordPanelRepository
         DayId,
         WaveId,
         MessageId,
+        SecondaryMessageId,
         IsCurrent,
         CreatedAt,
         FinalizedAt
@@ -815,6 +816,7 @@ public class DiscordPanelRepository
         DayId,
         WaveId,
         MessageId,
+        SecondaryMessageId,
         IsCurrent,
         CreatedAt,
         FinalizedAt
@@ -870,18 +872,24 @@ public class DiscordPanelRepository
             MessageId =
                 reader.GetString(5),
 
+            SecondaryMessageId =
+                reader.IsDBNull(6)
+                ? null
+                : reader.GetString(6),
+
             IsCurrent =
-                reader.GetInt32(6) == 1,
+                reader.GetInt32(7) == 1,
 
             CreatedAt =
                 DateTime.Parse(
-                    reader.GetString(7)),
+                    reader.GetString(8)),
 
             FinalizedAt =
-                reader.IsDBNull(8)
-                    ? null
-                    : DateTime.Parse(
-                        reader.GetString(8))
+                reader.IsDBNull(9)
+                ? null
+                : DateTime.Parse(
+                    reader.GetString(9)),
+        
         };
     }
 
@@ -890,7 +898,8 @@ public class DiscordPanelRepository
         int seasonId,
         long dayId,
         long waveId,
-        string messageId)
+        string messageId,
+        string? secondaryMessageId = null)
     {
         using SqliteConnection connection =
             Database.CreateConnection();
@@ -948,6 +957,7 @@ public class DiscordPanelRepository
                 DayId,
                 WaveId,
                 MessageId,
+                SecondaryMessageId,
                 IsCurrent,
                 CreatedAt
             )
@@ -958,12 +968,17 @@ public class DiscordPanelRepository
                 $dayId,
                 $waveId,
                 $messageId,
+                $secondaryMessageId,
                 1,
                 $createdAt
             )
             ON CONFLICT(PanelId, WaveId)
             DO UPDATE SET
                 MessageId = excluded.MessageId,
+
+                SecondaryMessageId =
+                excluded.SecondaryMessageId,
+
                 IsCurrent = 1,
                 FinalizedAt = NULL;
             """;
@@ -987,6 +1002,11 @@ public class DiscordPanelRepository
             saveCommand.Parameters.AddWithValue(
                 "$messageId",
                 messageId);
+            saveCommand.Parameters.AddWithValue(
+                "$secondaryMessageId",
+                secondaryMessageId is null
+                    ? DBNull.Value
+                    : secondaryMessageId);
 
             saveCommand.Parameters.AddWithValue(
                 "$createdAt",

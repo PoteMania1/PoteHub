@@ -145,16 +145,14 @@ public class DiscordWaveReportService
                      in report.Members)
             {
                 members.AppendLine(
-                    $"**{member.Rank}. " +
-                    $"{member.MemberName}**");
-
-                members.AppendLine(
                     $"Ganada: " +
                     $"**+{member.WaveReputationGain:N0}** " +
                     $"• Deducida: " +
                     $"**-{member.WaveReputationDeduction:N0}** " +
                     $"• Resultado: " +
                     $"**{member.WaveNetReputation:+#;-#;0}**");
+
+                members.AppendLine();
             }
         }
 
@@ -180,7 +178,7 @@ public class DiscordWaveReportService
                 $"{report.StartTime:HH:mm} – " +
                 $"{report.EndTime:HH:mm}\n" +
                 $"Estado: **{status}**",
-                inline: false)
+                inline: true)
 
             .AddField(
                 "Resultado del clan",
@@ -190,7 +188,7 @@ public class DiscordWaveReportService
                 $"**-{report.ReputationDeduction:N0}**\n" +
                 $"Resultado: " +
                 $"**{report.NetReputation:+#;-#;0}**",
-                inline: false)
+                inline: true)
 
             .AddField(
                 "Top miembros",

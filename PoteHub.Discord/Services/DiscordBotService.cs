@@ -28,6 +28,13 @@ public class DiscordBotService
 
     private readonly DiscordWaveReportService
         _waveReportService;
+    private readonly AttackCaptureRepository
+    _attackCaptureRepository;
+
+    private readonly AttackCaptureService
+        _attackCaptureService;
+
+    private Task? _attackCaptureTask;
     private readonly DiscordAdministrationRepository
     _administrationRepository;
 
@@ -83,6 +90,18 @@ public class DiscordBotService
             try
             {
                 await _waveReportTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Finalización normal.
+            }
+        }
+
+        if (_attackCaptureTask is not null)
+        {
+            try
+            {
+                await _attackCaptureTask;
             }
             catch (OperationCanceledException)
             {
@@ -318,6 +337,37 @@ public class DiscordBotService
                 "Muestra la configuración de PoteHub."
         };
 
+        SlashCommandBuilder attackCaptureCommand =
+        new()
+        {
+            Name = "registrar-ataques",
+            Description =
+                "Registra incrementos de reputación de un clan."
+        };
+
+        attackCaptureCommand.AddOption(
+            name: "clan_id",
+            type: ApplicationCommandOptionType.Integer,
+            description: "ID del clan que se registrará",
+            isRequired: true,
+            minValue: 1);
+
+        attackCaptureCommand.AddOption(
+            name: "waves",
+            type: ApplicationCommandOptionType.Integer,
+            description: "Cantidad de waves que se registrarán",
+            isRequired: true,
+            minValue: 1,
+            maxValue: 100);
+
+        SlashCommandBuilder stopAttackCaptureCommand =
+            new()
+            {
+                Name = "detener-registro-ataques",
+                Description =
+                    "Cancela el registro activo de este canal."
+            };
+
         SlashCommandBuilder disableReportsCommand = new()
         {
             Name = "desactivar-reportes",
@@ -350,6 +400,8 @@ public class DiscordBotService
                 configurationCommand.Build(),
                 disableReportsCommand.Build(),
                 deleteCharacterPanelCommand.Build(),
+                attackCaptureCommand.Build(),
+                stopAttackCaptureCommand.Build(),
             ];
 
             await guild.BulkOverwriteApplicationCommandAsync(
@@ -372,6 +424,14 @@ public class DiscordBotService
         {
             _waveReportTask =
                 _waveReportService.RunAsync(
+                    _client,
+                    _shutdownToken);
+        }
+
+        if (_attackCaptureTask is null)
+        {
+            _attackCaptureTask =
+                _attackCaptureService.RunAsync(
                     _client,
                     _shutdownToken);
         }
@@ -409,6 +469,12 @@ public class DiscordBotService
         _waveReportService =
             new DiscordWaveReportService(
                 _waveReportRepository);
+        _attackCaptureRepository =
+            new AttackCaptureRepository(database);
+
+        _attackCaptureService =
+            new AttackCaptureService(
+        _attackCaptureRepository);
         _administrationRepository =
         new DiscordAdministrationRepository(
         database);
@@ -509,6 +575,15 @@ public class DiscordBotService
 
                 case "eliminar-panel-personaje":
                     await HandleDeleteCharacterPanelAsync(
+                        command);
+                    break;
+                case "registrar-ataques":
+                    await HandleStartAttackCaptureAsync(
+                        command);
+                    break;
+
+                case "detener-registro-ataques":
+                    await HandleStopAttackCaptureAsync(
                         command);
                     break;
             }
@@ -1807,5 +1882,122 @@ public class DiscordBotService
                 totalBlocks - completedBlocks);
 
         return completed + pending;
+    }
+
+    private async Task HandleStartAttackCaptureAsync(
+    SocketSlashCommand command)
+    {
+        SocketGuildUser? guildUser =
+            await RequireAdministratorAsync(command);
+
+        if (guildUser is null)
+        {
+            return;
+        }
+
+        if (command.Channel
+            is not SocketTextChannel channel)
+        {
+            await command.RespondAsync(
+                "Este comando debe ejecutarse en un " +
+                "canal de texto.",
+                ephemeral: true);
+
+            return;
+        }
+
+        SocketSlashCommandDataOption? clanOption =
+            command.Data.Options.FirstOrDefault(
+                option => option.Name == "clan_id");
+
+        SocketSlashCommandDataOption? wavesOption =
+            command.Data.Options.FirstOrDefault(
+                option => option.Name == "waves");
+
+        if (clanOption?.Value is null ||
+            wavesOption?.Value is null)
+        {
+            await command.RespondAsync(
+                "Debés indicar un clan y la cantidad " +
+                "de waves.",
+                ephemeral: true);
+
+            return;
+        }
+
+        int clanId =
+            Convert.ToInt32(clanOption.Value);
+
+        int waveCount =
+            Convert.ToInt32(wavesOption.Value);
+
+        try
+        {
+            AttackCaptureSession session =
+                await _attackCaptureRepository.StartAsync(
+                    guildUser.Guild.Id.ToString(),
+                    channel.Id.ToString(),
+                    command.User.Id.ToString(),
+                    clanId,
+                    waveCount);
+
+            await command.RespondAsync(
+                $"🔴 **Registro iniciado**\n" +
+                $"Clan: **{session.ClanName}**\n" +
+                $"Temporada: **{session.SeasonName}**\n" +
+                $"Inicio: Día **{session.StartDayNumber}**, " +
+                $"Wave **{session.StartWaveNumber}**\n" +
+                $"Duración: **{session.WaveCount} waves**\n\n" +
+                "La primera wave contará desde este " +
+                "momento. Cuando finalice el registro, " +
+                "el TXT aparecerá en este canal.",
+                ephemeral: false);
+        }
+        catch (ArgumentException exception)
+        {
+            await command.RespondAsync(
+                exception.Message,
+                ephemeral: true);
+        }
+        catch (InvalidOperationException exception)
+        {
+            await command.RespondAsync(
+                exception.Message,
+                ephemeral: true);
+        }
+    }
+
+    private async Task HandleStopAttackCaptureAsync(
+        SocketSlashCommand command)
+    {
+        SocketGuildUser? guildUser =
+            await RequireAdministratorAsync(command);
+
+        if (guildUser is null)
+        {
+            return;
+        }
+
+        if (command.Channel
+            is not SocketTextChannel channel)
+        {
+            await command.RespondAsync(
+                "Este comando debe ejecutarse en un " +
+                "canal de texto.",
+                ephemeral: true);
+
+            return;
+        }
+
+        bool cancelled =
+            await _attackCaptureRepository.CancelAsync(
+                guildUser.Guild.Id.ToString(),
+                channel.Id.ToString());
+
+        await command.RespondAsync(
+            cancelled
+                ? "⛔ El registro de ataques fue cancelado."
+                : "No existe un registro activo en este canal.",
+            ephemeral: false);
     }
 }

@@ -81,10 +81,25 @@ public class NinjaSagaApiClient : IDisposable
     private async Task<ApiResponse> DownloadAsync(
         CancellationToken cancellationToken)
     {
-        using HttpRequestMessage request =
-            new(
-                HttpMethod.Get,
-                ClanRankingUrl);
+        long cacheBuster =
+        DateTimeOffset.UtcNow
+            .ToUnixTimeMilliseconds();
+
+            string requestUrl =
+                $"{ClanRankingUrl}?t={cacheBuster}";
+
+            using HttpRequestMessage request =
+                new(
+                    HttpMethod.Get,
+                    requestUrl);
+
+            request.Headers.TryAddWithoutValidation(
+                "Cache-Control",
+                "no-cache, no-store");
+
+            request.Headers.TryAddWithoutValidation(
+                "Pragma",
+                "no-cache");
 
         using HttpResponseMessage response =
             await _httpClient.SendAsync(

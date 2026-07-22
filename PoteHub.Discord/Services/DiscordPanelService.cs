@@ -342,10 +342,11 @@ public class DiscordPanelService
         }
 
         MemberRankingPanelData? data =
-            await _repository
-                .GetCurrentMemberRankingAsync(
-                    panel.ClanId.Value,
-                    limit: 25);
+    await _repository
+        .GetCurrentMemberRankingAsync(
+            panel.ClanId.Value,
+            limit: 25,
+            rankByWave: true);
 
         if (data is null ||
             data.Members.Count == 0)
@@ -479,14 +480,14 @@ public class DiscordPanelService
             await _repository
             .GetCurrentMemberRankingAsync(
             firstClan.ClanId,
-            limit: 10,
+            limit: 25,
             rankByWave: true);
 
         MemberRankingPanelData? secondMembers =
             await _repository
             .GetCurrentMemberRankingAsync(
              secondClan.ClanId,
-             limit: 10,
+             limit: 25,
                     rankByWave: true);
 
         if (firstMembers is null ||
@@ -511,8 +512,14 @@ public class DiscordPanelService
             return;
         }
 
-        Embed embed =
-            BuildClanComparisonEmbed(
+        Embed summaryEmbed =
+    BuildClanComparisonEmbed(
+        ranking,
+        firstClan,
+        secondClan);
+
+        Embed membersEmbed =
+            BuildClanComparisonMembersEmbed(
                 ranking,
                 firstClan,
                 secondClan,
@@ -528,28 +535,83 @@ public class DiscordPanelService
             currentMessage.WaveId ==
                 ranking.WaveId)
         {
-            bool updated =
+            bool summaryUpdated =
                 await TryUpdateMessageAsync(
                     channel,
                     currentMessage.MessageId,
-                    embed);
+                    summaryEmbed);
 
-            if (updated)
+            bool membersUpdated = false;
+
+            if (!string.IsNullOrWhiteSpace(
+                currentMessage.SecondaryMessageId))
+            {
+                membersUpdated =
+                    await TryUpdateMessageAsync(
+                        channel,
+                        currentMessage
+                            .SecondaryMessageId,
+                        membersEmbed);
+            }
+
+            if (summaryUpdated &&
+                membersUpdated)
             {
                 return;
             }
+
+            string summaryMessageId =
+                currentMessage.MessageId;
+
+            string? membersMessageId =
+                currentMessage.SecondaryMessageId;
+
+            if (!summaryUpdated)
+            {
+                IUserMessage replacementSummary =
+                    await channel.SendMessageAsync(
+                        embed: summaryEmbed);
+
+                summaryMessageId =
+                    replacementSummary.Id.ToString();
+            }
+
+            if (!membersUpdated)
+            {
+                IUserMessage replacementMembers =
+                    await channel.SendMessageAsync(
+                        embed: membersEmbed);
+
+                membersMessageId =
+                    replacementMembers.Id.ToString();
+            }
+
+            await _repository.SaveCurrentMessageAsync(
+                panel.PanelId,
+                ranking.SeasonId,
+                ranking.DayId,
+                ranking.WaveId,
+                summaryMessageId,
+                membersMessageId);
+
+            return;
         }
 
-        IUserMessage newMessage =
+        IUserMessage newSummaryMessage =
             await channel.SendMessageAsync(
-                embed: embed);
+                embed: summaryEmbed);
+
+        IUserMessage newMembersMessage =
+            await channel.SendMessageAsync(
+                embed: membersEmbed);
 
         await _repository.SaveCurrentMessageAsync(
             panel.PanelId,
             ranking.SeasonId,
             ranking.DayId,
             ranking.WaveId,
-            newMessage.Id.ToString());
+            newSummaryMessage.Id.ToString(),
+            newMembersMessage.Id.ToString());
 
         if (currentMessage is not null &&
             currentMessage.WaveId !=
@@ -558,12 +620,23 @@ public class DiscordPanelService
             await TryFinalizePreviousMessageAsync(
                 channel,
                 currentMessage.MessageId);
+
+            if (!string.IsNullOrWhiteSpace(
+                currentMessage.SecondaryMessageId))
+            {
+                await TryFinalizePreviousMessageAsync(
+                    channel,
+                    currentMessage
+                        .SecondaryMessageId);
+            }
         }
 
+
         Console.WriteLine(
-            $"Comparación publicada: " +
+            $"Comparación publicada en dos mensajes: " +
             $"{firstClan.ClanName} vs " +
             $"{secondClan.ClanName}.");
+
     }
 
     private static async Task<bool>
@@ -792,37 +865,43 @@ public class DiscordPanelService
         };
     }
     private static Embed BuildClanRankingEmbed(
-        ClanRankingPanelData data)
+    ClanRankingPanelData data)
     {
         StringBuilder description = new();
 
-        foreach (ClanRankingPanelEntry clan
-                 in data.Clans)
-        {
-            string medal =
-                clan.Rank switch
-                {
-                    1 => "🥇",
-                    2 => "🥈",
-                    3 => "🥉",
-                    _ => $"`{clan.Rank,2}.`"
-                };
+        double elapsedMinutes =
+        (
+            data.LastUpdatedAt -
+            data.WaveStartTime
+        ).TotalMinutes;
 
+        elapsedMinutes = Math.Clamp(
+            elapsedMinutes,
+            1,
+            30);
+
+        foreach (ClanRankingPanelEntry clan
+         in data.Clans)
+        {
             string waveChange =
                 FormatSignedNumber(
                     clan.WaveReputation);
 
-            description.AppendLine(
-                $"{medal} **{clan.ClanName}**");
+            double reputationPerMinute =
+                Math.Max(
+                    0,
+                    clan.WaveReputation) /
+                elapsedMinutes;
 
             description.AppendLine(
-                $"Total: `{clan.TotalReputation:N0}` " +
-                $"• Wave: `{waveChange}`");
+                $"**#{clan.Rank} {clan.ClanName}** — " +
+                $"`{waveChange} rep` • " +
+                $"`{reputationPerMinute:N1}/min`");
 
             if (clan.WaveDeduction > 0)
             {
                 description.AppendLine(
-                    $"Deducción en wave: " +
+                    $"↳ Deducción: " +
                     $"`-{clan.WaveDeduction:N0}`");
             }
 
@@ -835,18 +914,21 @@ public class DiscordPanelService
 
         return new EmbedBuilder()
             .WithTitle(
-                "🏆 Top 10 de clanes")
+                $"⚔️ Actividad de clanes — " +
+                $"Wave {data.WaveNumber}")
 
             .WithDescription(
                 description.ToString())
 
             .WithColor(
-                Color.Gold)
+                new Color(
+                    52,
+                    152,
+                    219))
 
             .AddField(
-                "Periodo",
-                $"Día {data.DayNumber} • " +
-                $"Wave {data.WaveNumber}",
+                "Día",
+                data.DayNumber,
                 inline: true)
 
             .AddField(
@@ -863,7 +945,7 @@ public class DiscordPanelService
 
             .WithFooter(
                 $"{data.SeasonName} • " +
-                $"Actualizado " +
+                $"Última actualización " +
                 $"{data.LastUpdatedAt:HH:mm:ss}")
 
             .WithCurrentTimestamp()
@@ -876,40 +958,39 @@ public class DiscordPanelService
     {
         StringBuilder description = new();
 
+        double elapsedMinutes =
+            (
+                data.LastUpdatedAt -
+                data.WaveStartTime
+            ).TotalMinutes;
+
+        elapsedMinutes = Math.Clamp(
+            elapsedMinutes,
+            1,
+            30);
+
         foreach (MemberRankingPanelEntry member
                  in data.Members)
         {
-            string position =
-                member.Rank switch
-                {
-                    1 => "🥇",
-                    2 => "🥈",
-                    3 => "🥉",
-                    _ => $"`{member.Rank,2}.`"
-                };
+            double reputationPerMinute =
+                member.WaveReputationGain /
+                elapsedMinutes;
 
             string waveChange =
                 FormatSignedNumber(
                     member.WaveNetReputation);
 
-            string rewardStatus =
-                member.TotalReputation >= 10000
-                    ? "✅"
-                    : "⏳";
-
             description.AppendLine(
-                $"{position} {rewardStatus} " +
-                $"**{member.MemberName}**");
-
-            description.AppendLine(
-                $"Rep: `{member.TotalReputation:N0}` " +
-                $"• Wave: `{waveChange}` " +
-                $"• Nv. `{member.Level}`");
+                $"🥷 **{member.MemberName}** — " +
+                $"`{waveChange} rep` • " +
+                $"`{reputationPerMinute:N1}/min`");
 
             if (member.WaveReputationDeduction > 0)
             {
                 description.AppendLine(
-                    $"Deducción en wave: " +
+                    $"Ganada: " +
+                    $"`+{member.WaveReputationGain:N0}` " +
+                    $"• Deducción: " +
                     $"`-{member.WaveReputationDeduction:N0}`");
             }
 
@@ -922,25 +1003,28 @@ public class DiscordPanelService
 
         return new EmbedBuilder()
             .WithTitle(
-                $"🥷 Ranking de {data.ClanName}")
+                $"⚔️ Actividad de {data.ClanName} — " +
+                $"Wave {data.WaveNumber}")
 
             .WithDescription(
                 description.ToString())
 
             .WithColor(
-                Color.Blue)
+                new Color(
+                    52,
+                    152,
+                    219))
 
             .AddField(
-                "Periodo",
-                $"Día {data.DayNumber} • " +
-                $"Wave {data.WaveNumber}",
+                "Día",
+                data.DayNumber,
                 inline: true)
 
             .AddField(
                 "Horario",
                 $"{data.WaveStartTime:HH:mm} – " +
                 $"{data.WaveEndTime:HH:mm} " +
-                "(servidor)",
+                $"(servidor)",
                 inline: true)
 
             .AddField(
@@ -948,15 +1032,9 @@ public class DiscordPanelService
                 status,
                 inline: true)
 
-            .AddField(
-                "Referencia",
-                "✅ Alcanzó 10.000 de reputación\n" +
-                "⏳ Todavía no alcanzó 10.000",
-                inline: false)
-
             .WithFooter(
                 $"{data.SeasonName} • " +
-                $"Actualizado " +
+                $"Última actualización " +
                 $"{data.LastUpdatedAt:HH:mm:ss}")
 
             .WithCurrentTimestamp()
@@ -967,9 +1045,7 @@ public class DiscordPanelService
     private static Embed BuildClanComparisonEmbed(
     ClanRankingPanelData context,
     ClanRankingPanelEntry firstClan,
-    ClanRankingPanelEntry secondClan,
-    MemberRankingPanelData firstMembers,
-    MemberRankingPanelData secondMembers)
+    ClanRankingPanelEntry secondClan)
     {
         int totalDifference =
             firstClan.TotalReputation -
@@ -1002,14 +1078,6 @@ public class DiscordPanelService
                 "en esta wave.";
         }
 
-        string firstMemberList =
-            BuildComparisonMemberList(
-                firstMembers.Members);
-
-        string secondMemberList =
-            BuildComparisonMemberList(
-                secondMembers.Members);
-
         string status =
             TranslateWaveStatus(
                 context.WaveStatus);
@@ -1019,51 +1087,55 @@ public class DiscordPanelService
                 $"⚔️ {firstClan.ClanName} vs " +
                 $"{secondClan.ClanName}")
 
-            .WithDescription(leader)
+            .WithDescription(
+                leader)
 
-            .WithColor(Color.DarkRed)
+            .WithColor(
+                Color.DarkRed)
 
             .AddField(
                 firstClan.ClanName,
+
                 $"Puesto: `#{firstClan.Rank}`\n" +
                 $"Total: `{firstClan.TotalReputation:N0}`\n" +
-                $"Wave: `{FormatSignedNumber(firstClan.WaveReputation)}`\n" +
-                $"Deducción: `{firstClan.WaveDeduction:N0}`",
+                $"Wave: `{FormatSignedNumber(
+                    firstClan.WaveReputation)}`\n" +
+                $"Deducción: " +
+                $"`{firstClan.WaveDeduction:N0}`",
+
                 inline: true)
 
             .AddField(
                 secondClan.ClanName,
+
                 $"Puesto: `#{secondClan.Rank}`\n" +
                 $"Total: `{secondClan.TotalReputation:N0}`\n" +
-                $"Wave: `{FormatSignedNumber(secondClan.WaveReputation)}`\n" +
-                $"Deducción: `{secondClan.WaveDeduction:N0}`",
+                $"Wave: `{FormatSignedNumber(
+                    secondClan.WaveReputation)}`\n" +
+                $"Deducción: " +
+                $"`{secondClan.WaveDeduction:N0}`",
+
                 inline: true)
 
             .AddField(
                 "Diferencia",
-                $"Total: `{FormatSignedNumber(totalDifference)}`\n" +
-                $"Wave: `{FormatSignedNumber(waveDifference)}`",
-                inline: true)
 
-            .AddField(
-                $"Top miembros — " +
-                $"{firstClan.ClanName}",
-                firstMemberList,
-                inline: true)
+                $"Total: `{FormatSignedNumber(
+                    totalDifference)}`\n" +
+                $"Wave: `{FormatSignedNumber(
+                    waveDifference)}`",
 
-            .AddField(
-                $"Top miembros — " +
-                $"{secondClan.ClanName}",
-                secondMemberList,
                 inline: true)
 
             .AddField(
                 "Periodo",
+
                 $"Día {context.DayNumber} • " +
                 $"Wave {context.WaveNumber}\n" +
                 $"{context.WaveStartTime:HH:mm} – " +
                 $"{context.WaveEndTime:HH:mm}\n" +
                 $"Estado: {status}",
+
                 inline: false)
 
             .WithFooter(
@@ -1076,28 +1148,123 @@ public class DiscordPanelService
             .Build();
     }
 
+    private static Embed
+    BuildClanComparisonMembersEmbed(
+        ClanRankingPanelData context,
+        ClanRankingPanelEntry firstClan,
+        ClanRankingPanelEntry secondClan,
+        MemberRankingPanelData firstMembers,
+        MemberRankingPanelData secondMembers)
+    {
+        double elapsedMinutes =
+            (
+                context.LastUpdatedAt -
+                context.WaveStartTime
+            ).TotalMinutes;
+
+        elapsedMinutes = Math.Clamp(
+            elapsedMinutes,
+            1,
+            30);
+
+        string firstMemberList =
+    BuildComparisonMemberList(
+        firstMembers.Members.Take(25),
+        elapsedMinutes,
+        startPosition: 1);
+
+        string secondMemberList =
+            BuildComparisonMemberList(
+                secondMembers.Members.Take(25),
+                elapsedMinutes,
+                startPosition: 1);
+
+        return new EmbedBuilder()
+            .WithTitle(
+                $"🥷 Miembros — " +
+                $"{firstClan.ClanName} vs " +
+                $"{secondClan.ClanName}")
+
+            .WithColor(
+                Color.DarkRed)
+
+            .AddField(
+                firstClan.ClanName,
+                firstMemberList,
+                inline: true)
+            
+            .AddField(
+                secondClan.ClanName,
+                secondMemberList,
+                inline: true)
+
+            .WithFooter(
+                $"Día {context.DayNumber} • " +
+                $"Wave {context.WaveNumber} • " +
+                $"Actualizado " +
+                $"{context.LastUpdatedAt:HH:mm:ss}")
+
+            .WithCurrentTimestamp()
+
+            .Build();
+    }
+
+    private static string ShortenComparisonName(
+    string name)
+    {
+        const int maximumLength = 15;
+
+        string cleanName = name
+            .Replace("\r", " ")
+            .Replace("\n", " ");
+
+        if (cleanName.Length <= maximumLength)
+        {
+            return cleanName;
+        }
+
+        return cleanName[
+            ..(maximumLength - 1)] + "…";
+    }
+
     private static string BuildComparisonMemberList(
-        IEnumerable<MemberRankingPanelEntry> members)
+    IEnumerable<MemberRankingPanelEntry> members,
+    double elapsedMinutes,
+    int startPosition)
     {
         StringBuilder builder = new();
 
+        int position = startPosition;
+
         foreach (MemberRankingPanelEntry member
-                 in members.Take(10))
+                 in members)
         {
-            builder.AppendLine(
-                $"`{member.Rank,2}.` " +
-                $"**{member.MemberName}**");
+            double reputationPerMinute =
+                member.WaveReputationGain /
+                elapsedMinutes;
+
+            string waveChange =
+                FormatSignedNumber(
+                    member.WaveNetReputation);
+
+            string memberName =
+                ShortenComparisonName(
+                    member.MemberName);
 
             builder.AppendLine(
-                $"`{member.TotalReputation:N0}` " +
-                $"• Wave " +
-                $"`+{member.WaveReputationGain:N0}`");
+                $"`{position,2}.` " +
+                $"**{memberName}** " +
+                $"`{waveChange}` " +
+                $"`{reputationPerMinute:N1}/m`");
+
+            position++;
         }
 
         return builder.Length == 0
             ? "Sin miembros disponibles."
             : builder.ToString();
     }
+
 
     private static string FormatSignedNumber(
         int value)
