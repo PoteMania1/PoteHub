@@ -281,14 +281,15 @@ public class DiscordPanelRepository
             PanelType,
             ChannelId,
             ClanId,
+            ComparisonClanId,
             IsActive,
             CreatedAt,
             UpdatedAt
-
+        
         FROM DiscordPanels
-
+        
         WHERE IsActive = 1
-
+        
         ORDER BY
             GuildId,
             PanelType;
@@ -302,24 +303,31 @@ public class DiscordPanelRepository
             panels.Add(new DiscordPanel
             {
                 PanelId = reader.GetInt64(0),
+
                 GuildId = reader.GetString(1),
+
                 PanelType = reader.GetString(2),
+
                 ChannelId = reader.GetString(3),
 
                 ClanId = reader.IsDBNull(4)
-                    ? null
-                    : reader.GetInt32(4),
+                ? null
+                : reader.GetInt32(4),
 
-                IsActive =
-                    reader.GetInt32(5) == 1,
+                        ComparisonClanId = reader.IsDBNull(5)
+                ? null
+                : reader.GetInt32(5),
 
-                CreatedAt =
-                    DateTime.Parse(
-                        reader.GetString(6)),
+                        IsActive =
+                reader.GetInt32(6) == 1,
 
-                UpdatedAt =
-                    DateTime.Parse(
-                        reader.GetString(7))
+                        CreatedAt =
+                DateTime.Parse(
+                    reader.GetString(7)),
+
+                        UpdatedAt =
+                DateTime.Parse(
+                    reader.GetString(8))
             });
         }
 
@@ -450,7 +458,8 @@ public class DiscordPanelRepository
     public async Task<MemberRankingPanelData?>
     GetCurrentMemberRankingAsync(
         int clanId,
-        int limit)
+        int limit,
+        bool rankByWave = false)
     {
         using SqliteConnection connection =
             Database.CreateConnection();
@@ -543,10 +552,17 @@ public class DiscordPanelRepository
     (
         SELECT
             RANK() OVER
-            (
-                ORDER BY
-                    p.Reputation DESC
-            ) AS MemberRank,
+    (
+        ORDER BY
+            CASE
+                WHEN $rankByWave = 1
+                THEN COALESCE(
+                    wt.ReputationGain,
+                    0
+                )
+                ELSE p.Reputation
+            END DESC
+    ) AS MemberRank,
 
             m.MemberId,
             m.Name,
@@ -595,8 +611,14 @@ public class DiscordPanelRepository
     FROM RankedMembers
 
     ORDER BY
-        MemberRank,
-        MemberId
+    CASE
+        WHEN $rankByWave = 1
+        THEN WaveGain
+        ELSE Reputation
+    END DESC,
+
+    Reputation DESC,
+    MemberId
 
     LIMIT $limit;
     """;
@@ -616,6 +638,9 @@ public class DiscordPanelRepository
         command.Parameters.AddWithValue(
             "$limit",
             limit);
+        command.Parameters.AddWithValue(
+            "$rankByWave",
+            rankByWave ? 1 : 0);
 
         using SqliteDataReader reader =
             await command.ExecuteReaderAsync();
@@ -976,5 +1001,133 @@ public class DiscordPanelRepository
             await transaction.RollbackAsync();
             throw;
         }
+    }
+
+    public async Task ConfigureComparisonAsync(
+    string guildId,
+    string channelId,
+    int firstClanId,
+    int secondClanId)
+    {
+        using SqliteConnection connection =
+            Database.CreateConnection();
+
+        await connection.OpenAsync();
+
+        using SqliteCommand command =
+            connection.CreateCommand();
+
+        command.CommandText =
+        """
+    INSERT INTO DiscordPanels
+    (
+        GuildId,
+        PanelType,
+        ChannelId,
+        ClanId,
+        ComparisonClanId,
+        IsActive,
+        CreatedAt,
+        UpdatedAt
+    )
+    VALUES
+    (
+        $guildId,
+        'ClanComparison',
+        $channelId,
+        $firstClanId,
+        $secondClanId,
+        1,
+        $createdAt,
+        $updatedAt
+    )
+    ON CONFLICT(GuildId, PanelType)
+    DO UPDATE SET
+        ChannelId =
+            excluded.ChannelId,
+
+        ClanId =
+            excluded.ClanId,
+
+        ComparisonClanId =
+            excluded.ComparisonClanId,
+
+        IsActive = 1,
+
+        UpdatedAt =
+            excluded.UpdatedAt;
+    """;
+
+        string timestamp =
+            DateTime.UtcNow.ToString("O");
+
+        command.Parameters.AddWithValue(
+            "$guildId",
+            guildId);
+
+        command.Parameters.AddWithValue(
+            "$channelId",
+            channelId);
+
+        command.Parameters.AddWithValue(
+            "$firstClanId",
+            firstClanId);
+
+        command.Parameters.AddWithValue(
+            "$secondClanId",
+            secondClanId);
+
+        command.Parameters.AddWithValue(
+            "$createdAt",
+            timestamp);
+
+        command.Parameters.AddWithValue(
+            "$updatedAt",
+            timestamp);
+
+        await command.ExecuteNonQueryAsync();
+    }
+
+    public async Task<bool> StopComparisonAsync(
+        string guildId,
+        string channelId)
+    {
+        using SqliteConnection connection =
+            Database.CreateConnection();
+
+        await connection.OpenAsync();
+
+        using SqliteCommand command =
+            connection.CreateCommand();
+
+        command.CommandText =
+        """
+        UPDATE DiscordPanels
+        SET
+            IsActive = 0,
+            UpdatedAt = $updatedAt
+
+        WHERE GuildId = $guildId
+          AND PanelType = 'ClanComparison'
+          AND ChannelId = $channelId
+          AND IsActive = 1;
+        """;
+
+        command.Parameters.AddWithValue(
+            "$guildId",
+            guildId);
+
+        command.Parameters.AddWithValue(
+            "$channelId",
+            channelId);
+
+        command.Parameters.AddWithValue(
+            "$updatedAt",
+            DateTime.UtcNow.ToString("O"));
+
+        int affectedRows =
+            await command.ExecuteNonQueryAsync();
+
+        return affectedRows > 0;
     }
 }

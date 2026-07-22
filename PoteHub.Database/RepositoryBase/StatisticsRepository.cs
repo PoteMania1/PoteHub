@@ -336,6 +336,52 @@ public class StatisticsRepository : RepositoryBase
         return ranking;
     }
 
+    public async Task<List<MemberRankingEntry>>
+    GetLastAvailableDayRankingAsync(
+        int seasonId,
+        int limit,
+        SqliteConnection connection)
+    {
+        using SqliteCommand command =
+            connection.CreateCommand();
+
+        command.CommandText =
+        """
+        SELECT MAX(d.DayNumber)
+
+        FROM SyncRuns sr
+
+        JOIN Days d
+            ON d.DayId = sr.DayId
+
+        WHERE sr.SeasonId = $seasonId
+          AND sr.DayId IS NOT NULL
+          AND sr.CompletedSuccessfully = 1;
+        """;
+
+        command.Parameters.AddWithValue(
+            "$seasonId",
+            seasonId);
+
+        object? result =
+            await command.ExecuteScalarAsync();
+
+        if (result is null ||
+            result is DBNull)
+        {
+            return [];
+        }
+
+        int dayNumber =
+            Convert.ToInt32(result);
+
+        return await GetDailyRankingAsync(
+            seasonId,
+            dayNumber,
+            limit,
+            connection);
+    }
+
     private static MemberRankingEntry ReadRankingEntry(
     SqliteDataReader reader)
     {

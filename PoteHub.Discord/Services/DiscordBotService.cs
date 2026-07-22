@@ -1,9 +1,11 @@
 ﻿using Discord;
 using Discord.WebSocket;
+using Microsoft.Data.Sqlite;
 using PoteHub.Database.Data;
 using PoteHub.Database.RepositoryBase;
 using PoteHub.Domain.Entities;
 using PoteHub.Domain.Enums;
+using System.Text;
 
 namespace PoteHub.Discord.Services;
 
@@ -14,6 +16,13 @@ public class DiscordBotService
     _discordUserRepository;
     private readonly DiscordPanelService
     _panelService;
+    private readonly DatabaseConnection _database;
+
+    private readonly StatisticsRepository
+        _statisticsRepository;
+
+    private readonly DiscordPanelRepository
+        _panelRepository;
     private Task? _panelUpdaterTask;
     private CancellationToken
         _shutdownToken;
@@ -154,6 +163,77 @@ public class DiscordBotService
             isRequired: false,
             minValue: 1);
 
+        SlashCommandBuilder rankingCommand = new()
+        {
+            Name = "ranking",
+            Description =
+        "Muestra un ranking de jugadores."
+        };
+
+        rankingCommand.AddOption(
+            new SlashCommandOptionBuilder()
+                .WithName("tipo")
+                .WithDescription(
+                    "Ranking que querés consultar")
+                .WithRequired(true)
+                .WithType(
+                    ApplicationCommandOptionType.String)
+                .AddChoice(
+                    "Global de temporada",
+                    "global")
+                .AddChoice(
+                    "Día actual",
+                    "diario")
+                .AddChoice(
+                    "Wave actual",
+                    "wave")
+                .AddChoice(
+                    "Último día disponible",
+                    "ultimo-dia"));
+
+        rankingCommand.AddOption(
+            name: "limite",
+            type:
+                ApplicationCommandOptionType.Integer,
+            description:
+                "Cantidad de jugadores, entre 1 y 25",
+            isRequired: false,
+            minValue: 1,
+            maxValue: 25);
+
+        SlashCommandBuilder compareCommand = new()
+        {
+            Name = "comparar-clanes",
+            Description =
+                "Compara dos clanes en vivo."
+        };
+
+        compareCommand.AddOption(
+            name: "clan_1",
+            type:
+                ApplicationCommandOptionType.Integer,
+            description:
+                "ID del primer clan",
+            isRequired: true,
+            minValue: 1);
+
+        compareCommand.AddOption(
+            name: "clan_2",
+            type:
+                ApplicationCommandOptionType.Integer,
+            description:
+                "ID del segundo clan",
+            isRequired: true,
+            minValue: 1);
+
+        SlashCommandBuilder stopComparisonCommand =
+            new()
+            {
+                Name = "detener-seguimiento",
+                Description =
+                    "Detiene la comparación del canal."
+            };
+
         linkCommand.AddOption(
             name: "personaje_id",
             type: ApplicationCommandOptionType.Integer,
@@ -169,7 +249,10 @@ public class DiscordBotService
                 pingCommand.Build(),
                 linkCommand.Build(),
                 myCharacterCommand.Build(),
-                configurePanelCommand.Build()
+                configurePanelCommand.Build(),
+                rankingCommand.Build(),
+                compareCommand.Build(),
+                stopComparisonCommand.Build()
             ];
 
             await guild.BulkOverwriteApplicationCommandAsync(
@@ -208,13 +291,18 @@ public class DiscordBotService
         OnSlashCommandExecutedAsync;
         _client.ButtonExecuted +=
         OnButtonExecutedAsync;
+        _database = database;
+
+        _statisticsRepository =
+            new StatisticsRepository(database);
+
+        _panelRepository =
+            new DiscordPanelRepository(database);
         _discordUserRepository =
         new DiscordUserRepository(database);
-        DiscordPanelRepository panelRepository =
-        new(database);
         _panelService =
-           new DiscordPanelService(
-              panelRepository);
+    new DiscordPanelService(
+        _panelRepository);
     }
 
     private async Task
@@ -237,6 +325,19 @@ public class DiscordBotService
                     break;
                 case "configurar-panel":
                     await HandleConfigurePanelAsync(
+                        command);
+                    break;
+                case "ranking":
+                    await HandleRankingAsync(command);
+                    break;
+
+                case "comparar-clanes":
+                    await HandleCompareClansAsync(
+                        command);
+                    break;
+
+                case "detener-seguimiento":
+                    await HandleStopComparisonAsync(
                         command);
                     break;
             }
@@ -661,6 +762,321 @@ public class DiscordBotService
                     ephemeral: true);
             }
         }
+    }
+
+    private async Task HandleRankingAsync(
+    SocketSlashCommand command)
+    {
+        await command.DeferAsync(
+            ephemeral: true);
+
+        string rankingType =
+            command.Data.Options
+                .First(option =>
+                    option.Name == "tipo")
+                .Value
+                .ToString()!;
+
+        SocketSlashCommandDataOption? limitOption =
+            command.Data.Options.FirstOrDefault(
+                option =>
+                    option.Name == "limite");
+
+        int limit = limitOption?.Value is null
+            ? 10
+            : Convert.ToInt32(
+                limitOption.Value);
+
+        ClanRankingPanelData? context =
+            await _panelRepository
+                .GetCurrentClanRankingAsync(
+                    limit: 1);
+
+        if (context is null)
+        {
+            await command.FollowupAsync(
+                "Todavía no hay datos sincronizados.",
+                ephemeral: true);
+
+            return;
+        }
+
+        using SqliteConnection connection =
+            _database.CreateConnection();
+
+        await connection.OpenAsync();
+
+        List<MemberRankingEntry> ranking;
+
+        string title;
+
+        switch (rankingType)
+        {
+            case "global":
+                ranking =
+                    await _statisticsRepository
+                        .GetGlobalRankingAsync(
+                            context.SeasonId,
+                            limit,
+                            connection);
+
+                title =
+                    "🌍 Ranking global";
+                break;
+
+            case "diario":
+                ranking =
+                    await _statisticsRepository
+                        .GetDailyRankingAsync(
+                            context.SeasonId,
+                            context.DayNumber,
+                            limit,
+                            connection);
+
+                title =
+                    $"📅 Ranking del día " +
+                    $"{context.DayNumber}";
+                break;
+
+            case "wave":
+                ranking =
+                    await _statisticsRepository
+                        .GetWaveRankingAsync(
+                            context.WaveId,
+                            limit,
+                            connection);
+
+                title =
+                    $"🌊 Ranking de la wave " +
+                    $"{context.WaveNumber}";
+                break;
+
+            case "ultimo-dia":
+                ranking =
+                    await _statisticsRepository
+                        .GetLastAvailableDayRankingAsync(
+                            context.SeasonId,
+                            limit,
+                            connection);
+
+                title =
+                    "🏁 Ranking del último día";
+                break;
+
+            default:
+                await command.FollowupAsync(
+                    "El tipo de ranking no es válido.",
+                    ephemeral: true);
+
+                return;
+        }
+
+        Embed embed =
+            BuildPlayerRankingEmbed(
+                title,
+                context,
+                ranking);
+
+        await command.FollowupAsync(
+            embed: embed,
+            ephemeral: true);
+    }
+
+    private static Embed BuildPlayerRankingEmbed(
+        string title,
+        ClanRankingPanelData context,
+        IEnumerable<MemberRankingEntry> ranking)
+    {
+        StringBuilder description = new();
+
+        foreach (MemberRankingEntry member
+                 in ranking)
+        {
+            string position =
+                member.Rank switch
+                {
+                    1 => "🥇",
+                    2 => "🥈",
+                    3 => "🥉",
+                    _ => $"`{member.Rank,2}.`"
+                };
+
+            description.AppendLine(
+                $"{position} **{member.MemberName}**");
+
+            description.AppendLine(
+                $"Clan: `{member.ClanName}` • " +
+                $"Rep: `{member.CurrentReputation:N0}`");
+
+            if (member.ReputationGain != 0 ||
+                member.ReputationDeduction != 0)
+            {
+                description.AppendLine(
+                    $"Ganada: `+{member.ReputationGain:N0}` " +
+                    $"• Deducida: " +
+                    "`-" +
+                    $"{member.ReputationDeduction:N0}`");
+            }
+
+            description.AppendLine();
+        }
+
+        if (description.Length == 0)
+        {
+            description.Append(
+                "Todavía no hay actividad registrada.");
+        }
+
+        return new EmbedBuilder()
+            .WithTitle(title)
+            .WithDescription(
+                description.ToString())
+            .WithColor(Color.Purple)
+            .WithFooter(
+                $"{context.SeasonName} • " +
+                $"Día {context.DayNumber} • " +
+                $"Wave {context.WaveNumber}")
+            .WithCurrentTimestamp()
+            .Build();
+    }
+
+    private async Task HandleCompareClansAsync(
+    SocketSlashCommand command)
+    {
+        if (command.User is not SocketGuildUser
+            guildUser)
+        {
+            await command.RespondAsync(
+                "Este comando solamente funciona " +
+                "dentro de un servidor.",
+                ephemeral: true);
+
+            return;
+        }
+
+        if (!guildUser.GuildPermissions
+            .ManageGuild)
+        {
+            await command.RespondAsync(
+                "Necesitás el permiso Administrar " +
+                "servidor para iniciar seguimientos.",
+                ephemeral: true);
+
+            return;
+        }
+
+        if (command.Channel
+            is not SocketTextChannel channel)
+        {
+            await command.RespondAsync(
+                "Este comando debe ejecutarse en " +
+                "un canal de texto.",
+                ephemeral: true);
+
+            return;
+        }
+
+        int firstClanId =
+            Convert.ToInt32(
+                command.Data.Options
+                    .First(option =>
+                        option.Name == "clan_1")
+                    .Value);
+
+        int secondClanId =
+            Convert.ToInt32(
+                command.Data.Options
+                    .First(option =>
+                        option.Name == "clan_2")
+                    .Value);
+
+        await command.DeferAsync(
+            ephemeral: true);
+
+        try
+        {
+            (string firstClanName,
+             string secondClanName) =
+                await _panelService
+                    .ConfigureComparisonAsync(
+                        guildUser.Guild.Id,
+                        channel.Id,
+                        firstClanId,
+                        secondClanId);
+
+            await command.FollowupAsync(
+                $"✅ Seguimiento iniciado.\n" +
+                $"**{firstClanName}** vs " +
+                $"**{secondClanName}**\n" +
+                $"Canal: {channel.Mention}\n" +
+                "El panel aparecerá en un máximo " +
+                "de 30 segundos.",
+                ephemeral: true);
+        }
+        catch (ArgumentException exception)
+        {
+            await command.FollowupAsync(
+                exception.Message,
+                ephemeral: true);
+        }
+    }
+
+    private async Task HandleStopComparisonAsync(
+    SocketSlashCommand command)
+    {
+        if (command.User is not SocketGuildUser
+            guildUser)
+        {
+            await command.RespondAsync(
+                "Este comando solamente funciona " +
+                "dentro de un servidor.",
+                ephemeral: true);
+
+            return;
+        }
+
+        if (!guildUser.GuildPermissions
+            .ManageGuild)
+        {
+            await command.RespondAsync(
+                "Necesitás el permiso Administrar " +
+                "servidor para detener seguimientos.",
+                ephemeral: true);
+
+            return;
+        }
+
+        if (command.Channel
+            is not SocketTextChannel channel)
+        {
+            await command.RespondAsync(
+                "Este comando debe ejecutarse en " +
+                "el canal del seguimiento.",
+                ephemeral: true);
+
+            return;
+        }
+
+        bool stopped =
+            await _panelService
+                .StopComparisonAsync(
+                    guildUser.Guild.Id,
+                    channel.Id);
+
+        if (!stopped)
+        {
+            await command.RespondAsync(
+                "No hay un seguimiento activo " +
+                "en este canal.",
+                ephemeral: true);
+
+            return;
+        }
+
+        await command.RespondAsync(
+            "✅ El seguimiento de clanes fue " +
+            "detenido.",
+            ephemeral: true);
     }
 
     private static string CreateProgressBar(

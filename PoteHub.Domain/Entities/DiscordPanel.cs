@@ -15,6 +15,8 @@ public class DiscordPanel
 
     public int? ClanId { get; set; }
 
+    public int? ComparisonClanId { get; set; }
+
     public bool IsActive { get; set; }
 
     public DateTime CreatedAt { get; set; }

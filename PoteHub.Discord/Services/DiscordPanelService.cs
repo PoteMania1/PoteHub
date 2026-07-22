@@ -14,9 +14,12 @@ public class DiscordPanelService
     public const string HomeClanMembers =
         "HomeClanMembers";
 
+    public const string ClanComparison =
+    "ClanComparison";
+
     private static readonly TimeSpan
         UpdateInterval =
-            TimeSpan.FromSeconds(30);
+            TimeSpan.FromSeconds(2);
 
     private readonly DiscordPanelRepository
         _repository;
@@ -62,6 +65,63 @@ public class DiscordPanelService
             clanId);
 
         return clanName;
+    }
+
+    public async Task<(string FirstClanName,
+    string SecondClanName)>
+    ConfigureComparisonAsync(
+        ulong guildId,
+        ulong channelId,
+        int firstClanId,
+        int secondClanId)
+    {
+        if (firstClanId == secondClanId)
+        {
+            throw new ArgumentException(
+                "Tenés que seleccionar dos clanes " +
+                "diferentes.");
+        }
+
+        string? firstClanName =
+            await _repository.GetClanNameAsync(
+                firstClanId);
+
+        if (firstClanName is null)
+        {
+            throw new ArgumentException(
+                $"No existe un clan con ID " +
+                $"{firstClanId}.");
+        }
+
+        string? secondClanName =
+            await _repository.GetClanNameAsync(
+                secondClanId);
+
+        if (secondClanName is null)
+        {
+            throw new ArgumentException(
+                $"No existe un clan con ID " +
+                $"{secondClanId}.");
+        }
+
+        await _repository.ConfigureComparisonAsync(
+            guildId.ToString(),
+            channelId.ToString(),
+            firstClanId,
+            secondClanId);
+
+        return (
+            firstClanName,
+            secondClanName);
+    }
+
+    public async Task<bool> StopComparisonAsync(
+        ulong guildId,
+        ulong channelId)
+    {
+        return await _repository.StopComparisonAsync(
+            guildId.ToString(),
+            channelId.ToString());
     }
 
     public async Task RunUpdaterAsync(
@@ -141,6 +201,18 @@ public class DiscordPanelService
                     await UpdateHomeClanMembersAsync(
                         client,
                         panel);
+                    break;
+
+                case ClanComparison:
+                    await UpdateClanComparisonAsync(
+                        client,
+                        panel);
+                    break;
+
+                default:
+                    Console.WriteLine(
+                        $"Tipo de panel desconocido: " +
+                        $"{panel.PanelType}");
                     break;
             }
         }
@@ -341,6 +413,139 @@ public class DiscordPanelService
             $"{data.ClanName}, " +
             $"día {data.DayNumber}, " +
             $"wave {data.WaveNumber}.");
+    }
+
+    private async Task UpdateClanComparisonAsync(
+    DiscordSocketClient client,
+    DiscordPanel panel)
+    {
+        if (panel.ClanId is null ||
+            panel.ComparisonClanId is null)
+        {
+            Console.WriteLine(
+                $"El panel {panel.PanelId} no tiene " +
+                "los dos clanes configurados.");
+
+            return;
+        }
+
+        ClanRankingPanelData? ranking =
+            await _repository
+                .GetCurrentClanRankingAsync(
+                    limit: 100);
+
+        if (ranking is null)
+        {
+            return;
+        }
+
+        ClanRankingPanelEntry? firstClan =
+            ranking.Clans.FirstOrDefault(
+                clan =>
+                    clan.ClanId ==
+                    panel.ClanId.Value);
+
+        ClanRankingPanelEntry? secondClan =
+            ranking.Clans.FirstOrDefault(
+                clan =>
+                    clan.ClanId ==
+                    panel.ComparisonClanId.Value);
+
+        if (firstClan is null ||
+            secondClan is null)
+        {
+            return;
+        }
+
+        MemberRankingPanelData? firstMembers =
+            await _repository
+            .GetCurrentMemberRankingAsync(
+            firstClan.ClanId,
+            limit: 10,
+            rankByWave: true);
+
+        MemberRankingPanelData? secondMembers =
+            await _repository
+            .GetCurrentMemberRankingAsync(
+             secondClan.ClanId,
+             limit: 10,
+                    rankByWave: true);
+
+        if (firstMembers is null ||
+            secondMembers is null)
+        {
+            return;
+        }
+
+        if (!ulong.TryParse(
+            panel.ChannelId,
+            out ulong channelId))
+        {
+            return;
+        }
+
+        SocketTextChannel? channel =
+            client.GetChannel(channelId)
+                as SocketTextChannel;
+
+        if (channel is null)
+        {
+            return;
+        }
+
+        Embed embed =
+            BuildClanComparisonEmbed(
+                ranking,
+                firstClan,
+                secondClan,
+                firstMembers,
+                secondMembers);
+
+        DiscordPanelMessage? currentMessage =
+            await _repository
+                .GetCurrentMessageAsync(
+                    panel.PanelId);
+
+        if (currentMessage is not null &&
+            currentMessage.WaveId ==
+                ranking.WaveId)
+        {
+            bool updated =
+                await TryUpdateMessageAsync(
+                    channel,
+                    currentMessage.MessageId,
+                    embed);
+
+            if (updated)
+            {
+                return;
+            }
+        }
+
+        IUserMessage newMessage =
+            await channel.SendMessageAsync(
+                embed: embed);
+
+        await _repository.SaveCurrentMessageAsync(
+            panel.PanelId,
+            ranking.SeasonId,
+            ranking.DayId,
+            ranking.WaveId,
+            newMessage.Id.ToString());
+
+        if (currentMessage is not null &&
+            currentMessage.WaveId !=
+                ranking.WaveId)
+        {
+            await TryFinalizePreviousMessageAsync(
+                channel,
+                currentMessage.MessageId);
+        }
+
+        Console.WriteLine(
+            $"Comparación publicada: " +
+            $"{firstClan.ClanName} vs " +
+            $"{secondClan.ClanName}.");
     }
 
     private static async Task<bool>
@@ -596,6 +801,142 @@ public class DiscordPanelService
 
             .Build();
     }
+
+    private static Embed BuildClanComparisonEmbed(
+    ClanRankingPanelData context,
+    ClanRankingPanelEntry firstClan,
+    ClanRankingPanelEntry secondClan,
+    MemberRankingPanelData firstMembers,
+    MemberRankingPanelData secondMembers)
+    {
+        int totalDifference =
+            firstClan.TotalReputation -
+            secondClan.TotalReputation;
+
+        int waveDifference =
+            firstClan.WaveReputation -
+            secondClan.WaveReputation;
+
+        string leader;
+
+        if (waveDifference > 0)
+        {
+            leader =
+                $"🏆 {firstClan.ClanName} lleva " +
+                $"{Math.Abs(waveDifference):N0} " +
+                "de ventaja en esta wave.";
+        }
+        else if (waveDifference < 0)
+        {
+            leader =
+                $"🏆 {secondClan.ClanName} lleva " +
+                $"{Math.Abs(waveDifference):N0} " +
+                "de ventaja en esta wave.";
+        }
+        else
+        {
+            leader =
+                "⚖️ Los dos clanes están empatados " +
+                "en esta wave.";
+        }
+
+        string firstMemberList =
+            BuildComparisonMemberList(
+                firstMembers.Members);
+
+        string secondMemberList =
+            BuildComparisonMemberList(
+                secondMembers.Members);
+
+        string status =
+            TranslateWaveStatus(
+                context.WaveStatus);
+
+        return new EmbedBuilder()
+            .WithTitle(
+                $"⚔️ {firstClan.ClanName} vs " +
+                $"{secondClan.ClanName}")
+
+            .WithDescription(leader)
+
+            .WithColor(Color.DarkRed)
+
+            .AddField(
+                firstClan.ClanName,
+                $"Puesto: `#{firstClan.Rank}`\n" +
+                $"Total: `{firstClan.TotalReputation:N0}`\n" +
+                $"Wave: `{FormatSignedNumber(firstClan.WaveReputation)}`\n" +
+                $"Deducción: `{firstClan.WaveDeduction:N0}`",
+                inline: true)
+
+            .AddField(
+                secondClan.ClanName,
+                $"Puesto: `#{secondClan.Rank}`\n" +
+                $"Total: `{secondClan.TotalReputation:N0}`\n" +
+                $"Wave: `{FormatSignedNumber(secondClan.WaveReputation)}`\n" +
+                $"Deducción: `{secondClan.WaveDeduction:N0}`",
+                inline: true)
+
+            .AddField(
+                "Diferencia",
+                $"Total: `{FormatSignedNumber(totalDifference)}`\n" +
+                $"Wave: `{FormatSignedNumber(waveDifference)}`",
+                inline: true)
+
+            .AddField(
+                $"Top miembros — " +
+                $"{firstClan.ClanName}",
+                firstMemberList,
+                inline: true)
+
+            .AddField(
+                $"Top miembros — " +
+                $"{secondClan.ClanName}",
+                secondMemberList,
+                inline: true)
+
+            .AddField(
+                "Periodo",
+                $"Día {context.DayNumber} • " +
+                $"Wave {context.WaveNumber}\n" +
+                $"{context.WaveStartTime:HH:mm} – " +
+                $"{context.WaveEndTime:HH:mm}\n" +
+                $"Estado: {status}",
+                inline: false)
+
+            .WithFooter(
+                $"{context.SeasonName} • " +
+                $"Actualizado " +
+                $"{context.LastUpdatedAt:HH:mm:ss}")
+
+            .WithCurrentTimestamp()
+
+            .Build();
+    }
+
+    private static string BuildComparisonMemberList(
+        IEnumerable<MemberRankingPanelEntry> members)
+    {
+        StringBuilder builder = new();
+
+        foreach (MemberRankingPanelEntry member
+                 in members.Take(10))
+        {
+            builder.AppendLine(
+                $"`{member.Rank,2}.` " +
+                $"**{member.MemberName}**");
+
+            builder.AppendLine(
+                $"`{member.TotalReputation:N0}` " +
+                $"• Wave " +
+                $"`+{member.WaveReputationGain:N0}`");
+        }
+
+        return builder.Length == 0
+            ? "Sin miembros disponibles."
+            : builder.ToString();
+    }
+
     private static string FormatSignedNumber(
         int value)
     {
