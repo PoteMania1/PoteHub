@@ -19,7 +19,7 @@ public class DiscordPanelService
 
     private static readonly TimeSpan
         UpdateInterval =
-            TimeSpan.FromSeconds(2);
+            TimeSpan.FromSeconds(5);
 
     private readonly DiscordPanelRepository
         _repository;
@@ -189,31 +189,49 @@ public class DiscordPanelService
             cancellationToken
                 .ThrowIfCancellationRequested();
 
-            switch (panel.PanelType)
+            try
             {
-                case ClanRanking:
-                    await UpdateClanRankingAsync(
-                        client,
-                        panel);
-                    break;
+                switch (panel.PanelType)
+                {
+                    case ClanRanking:
+                        await UpdateClanRankingAsync(
+                            client,
+                            panel);
+                        break;
 
-                case HomeClanMembers:
-                    await UpdateHomeClanMembersAsync(
-                        client,
-                        panel);
-                    break;
+                    case HomeClanMembers:
+                        await UpdateHomeClanMembersAsync(
+                            client,
+                            panel);
+                        break;
 
-                case ClanComparison:
-                    await UpdateClanComparisonAsync(
-                        client,
-                        panel);
-                    break;
+                    case ClanComparison:
+                        await UpdateClanComparisonAsync(
+                            client,
+                            panel);
+                        break;
 
-                default:
-                    Console.WriteLine(
-                        $"Tipo de panel desconocido: " +
-                        $"{panel.PanelType}");
-                    break;
+                    default:
+                        Console.WriteLine(
+                            $"Tipo de panel desconocido: " +
+                            $"{panel.PanelType}");
+                        break;
+                }
+            }
+            catch (global::Discord.Net.HttpException exception)
+                when (IsTemporaryDiscordError(exception))
+            {
+                Console.WriteLine(
+                    $"Discord no está disponible para el " +
+                    $"panel {panel.PanelType}. Se probará " +
+                    $"nuevamente en la próxima ronda.");
+            }
+            catch (HttpRequestException exception)
+            {
+                Console.WriteLine(
+                    $"Error de conexión en el panel " +
+                    $"{panel.PanelType}: " +
+                    $"{exception.Message}");
             }
         }
     }
@@ -549,86 +567,230 @@ public class DiscordPanelService
     }
 
     private static async Task<bool>
-    TryUpdateMessageAsync(
-        SocketTextChannel channel,
-        string messageIdText,
-        Embed embed)
+     TryUpdateMessageAsync(
+         SocketTextChannel channel,
+         string messageIdText,
+         Embed embed)
     {
         if (!ulong.TryParse(
-            messageIdText,
-            out ulong messageId))
+                messageIdText,
+                out ulong messageId))
         {
             return false;
         }
 
-        try
-        {
-            IUserMessage? message =
-                await channel.GetMessageAsync(
-                    messageId)
-                as IUserMessage;
+        const int maximumAttempts = 3;
 
-            if (message is null)
+        for (int attempt = 1;
+             attempt <= maximumAttempts;
+             attempt++)
+        {
+            try
             {
+                IUserMessage? message =
+                    channel.GetCachedMessage(messageId)
+                        as IUserMessage;
+
+                message ??=
+                    await channel.GetMessageAsync(
+                        messageId)
+                    as IUserMessage;
+
+                if (message is null)
+                {
+                    return false;
+                }
+
+                await message.ModifyAsync(
+                    properties =>
+                    {
+                        properties.Embed = embed;
+                    });
+
+                return true;
+            }
+            catch (global::Discord.Net.HttpException exception)
+                when (exception.HttpCode ==
+                      System.Net.HttpStatusCode.NotFound)
+            {
+                // El mensaje fue eliminado de Discord.
                 return false;
             }
-
-            await message.ModifyAsync(
-                properties =>
+            catch (global::Discord.Net.HttpException exception)
+                when (IsTemporaryDiscordError(exception))
+            {
+                if (attempt == maximumAttempts)
                 {
-                    properties.Embed = embed;
-                });
+                    Console.WriteLine(
+                        $"Discord no permitió actualizar " +
+                        $"el mensaje {messageId} después " +
+                        $"{maximumAttempts} intentos. " +
+                        $"Se probará nuevamente en la " +
+                        $"próxima actualización.");
 
-            return true;
+                    // Devolvemos true para evitar que el
+                    // servicio publique otro mensaje.
+                    return true;
+                }
+
+                await Task.Delay(
+                    GetRetryDelay(attempt));
+            }
+            catch (HttpRequestException exception)
+            {
+                if (attempt == maximumAttempts)
+                {
+                    Console.WriteLine(
+                        $"Error temporal de conexión " +
+                        $"actualizando el mensaje " +
+                        $"{messageId}: " +
+                        $"{exception.Message}");
+
+                    return true;
+                }
+
+                await Task.Delay(
+                    GetRetryDelay(attempt));
+            }
+            catch (TaskCanceledException)
+            {
+                if (attempt == maximumAttempts)
+                {
+                    Console.WriteLine(
+                        $"Discord tardó demasiado en " +
+                        $"actualizar el mensaje " +
+                        $"{messageId}.");
+
+                    return true;
+                }
+
+                await Task.Delay(
+                    GetRetryDelay(attempt));
+            }
         }
-        catch (global::Discord.Net.HttpException exception)
-            when (exception.HttpCode ==
-                System.Net.HttpStatusCode.NotFound)
-        {
-            return false;
-        }
+
+        return true;
     }
 
-    private static async Task
+   private static async Task
     TryFinalizePreviousMessageAsync(
         SocketTextChannel channel,
         string messageIdText)
     {
         if (!ulong.TryParse(
-            messageIdText,
-            out ulong messageId))
+                messageIdText,
+                out ulong messageId))
         {
             return;
         }
 
-        try
-        {
-            IUserMessage? message =
-                await channel.GetMessageAsync(
-                    messageId)
-                as IUserMessage;
+        const int maximumAttempts = 3;
 
-            if (message is null)
+        for (int attempt = 1;
+             attempt <= maximumAttempts;
+             attempt++)
+        {
+            try
             {
+                IUserMessage? message =
+                    channel.GetCachedMessage(messageId)
+                        as IUserMessage;
+
+                message ??=
+                    await channel.GetMessageAsync(
+                        messageId)
+                    as IUserMessage;
+
+                if (message is null)
+                {
+                    return;
+                }
+
+                await message.ModifyAsync(
+                    properties =>
+                    {
+                        properties.Content =
+                            "✅ **Wave finalizada — " +
+                            "resultado definitivo**";
+                    });
+
                 return;
             }
-
-            await message.ModifyAsync(
-                properties =>
+            catch (global::Discord.Net.HttpException exception)
+                when (exception.HttpCode ==
+                      System.Net.HttpStatusCode.NotFound)
+            {
+                // El mensaje fue eliminado manualmente.
+                return;
+            }
+            catch (global::Discord.Net.HttpException exception)
+                when (IsTemporaryDiscordError(exception))
+            {
+                if (attempt == maximumAttempts)
                 {
-                    properties.Content =
-                        "✅ **Wave finalizada — " +
-                        "resultado definitivo**";
-                });
-        }
-        catch (global::Discord.Net.HttpException exception)
-            when (exception.HttpCode ==
-                System.Net.HttpStatusCode.NotFound)
-        {
-            // El mensaje fue eliminado manualmente.
+                    Console.WriteLine(
+                        $"No se pudo finalizar el mensaje " +
+                        $"{messageId}. Se continuará sin " +
+                        $"detener el actualizador.");
+
+                    return;
+                }
+
+                await Task.Delay(
+                    GetRetryDelay(attempt));
+            }
+            catch (HttpRequestException exception)
+            {
+                if (attempt == maximumAttempts)
+                {
+                    Console.WriteLine(
+                        $"Error de conexión finalizando " +
+                        $"el mensaje {messageId}: " +
+                        $"{exception.Message}");
+
+                    return;
+                }
+
+                await Task.Delay(
+                    GetRetryDelay(attempt));
+            }
+            catch (TaskCanceledException)
+            {
+                if (attempt == maximumAttempts)
+                {
+                    Console.WriteLine(
+                        $"Discord tardó demasiado en " +
+                        $"finalizar el mensaje " +
+                        $"{messageId}.");
+
+                    return;
+                }
+
+                await Task.Delay(
+                    GetRetryDelay(attempt));
+            }
         }
     }
 
+    private static bool IsTemporaryDiscordError(
+    global::Discord.Net.HttpException exception)
+    {
+        return exception.HttpCode is
+            System.Net.HttpStatusCode.BadGateway or
+            System.Net.HttpStatusCode.ServiceUnavailable or
+            System.Net.HttpStatusCode.GatewayTimeout;
+    }
+
+    private static TimeSpan GetRetryDelay(
+        int attempt)
+    {
+        return attempt switch
+        {
+            1 => TimeSpan.FromSeconds(1),
+            2 => TimeSpan.FromSeconds(2),
+            _ => TimeSpan.FromSeconds(4)
+        };
+    }
     private static Embed BuildClanRankingEmbed(
         ClanRankingPanelData data)
     {
