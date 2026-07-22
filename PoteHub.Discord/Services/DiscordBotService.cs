@@ -28,6 +28,11 @@ public class DiscordBotService
 
     private readonly DiscordWaveReportService
         _waveReportService;
+    private readonly DiscordAdministrationRepository
+    _administrationRepository;
+
+    private readonly CommandCooldownService
+        _cooldownService;
 
     private Task? _waveReportTask;
     private Task? _panelUpdaterTask;
@@ -299,6 +304,35 @@ public class DiscordBotService
             isRequired: true,
             minValue: 1);
 
+        SlashCommandBuilder unlinkCommand = new()
+        {
+            Name = "desvincular",
+            Description =
+        "Desvincula tu personaje de Discord."
+        };
+
+        SlashCommandBuilder configurationCommand = new()
+        {
+            Name = "configuracion",
+            Description =
+                "Muestra la configuración de PoteHub."
+        };
+
+        SlashCommandBuilder disableReportsCommand = new()
+        {
+            Name = "desactivar-reportes",
+            Description =
+                "Desactiva los reportes automáticos."
+        };
+
+        SlashCommandBuilder deleteCharacterPanelCommand =
+            new()
+            {
+                Name = "eliminar-panel-personaje",
+                Description =
+                    "Elimina el panel Ver mi personaje."
+            };
+
         foreach (SocketGuild guild in _client.Guilds)
         {
             ApplicationCommandProperties[] commands =
@@ -312,6 +346,10 @@ public class DiscordBotService
                 stopComparisonCommand.Build(),
                 publishCharacterCommand.Build(),
                 configureReportsCommand.Build(),
+                unlinkCommand.Build(),
+                configurationCommand.Build(),
+                disableReportsCommand.Build(),
+                deleteCharacterPanelCommand.Build(),
             ];
 
             await guild.BulkOverwriteApplicationCommandAsync(
@@ -371,6 +409,12 @@ public class DiscordBotService
         _waveReportService =
             new DiscordWaveReportService(
                 _waveReportRepository);
+        _administrationRepository =
+        new DiscordAdministrationRepository(
+        database);
+
+        _cooldownService =
+            new CommandCooldownService();
         _discordUserRepository =
         new DiscordUserRepository(database);
         _panelService =
@@ -384,6 +428,35 @@ public class DiscordBotService
     {
         try
         {
+            TimeSpan cooldown =
+            command.CommandName switch
+            {
+                "vincular" => TimeSpan.FromSeconds(10),
+                "desvincular" => TimeSpan.FromSeconds(10),
+                "mi-personaje" => TimeSpan.FromSeconds(3),
+                "ranking" => TimeSpan.FromSeconds(5),
+                "ping" => TimeSpan.FromSeconds(2),
+                _ => TimeSpan.FromSeconds(10)
+            };
+
+            bool allowed =
+                _cooldownService.TryAcquire(
+                    command.User.Id,
+                    command.CommandName,
+                    cooldown,
+                    out TimeSpan remaining);
+
+            if (!allowed)
+            {
+                await command.RespondAsync(
+                    $"Esperá {Math.Ceiling(remaining.TotalSeconds)} " +
+                    "segundos antes de volver a usar " +
+                    "este comando.",
+                    ephemeral: true);
+
+                return;
+            }
+
             switch (command.CommandName)
             {
                 case "ping":
@@ -420,6 +493,22 @@ public class DiscordBotService
 
                 case "configurar-reportes":
                     await HandleConfigureReportsAsync(
+                        command);
+                    break;
+                case "desvincular":
+                    await HandleUnlinkAsync(command);
+                    break;
+
+                case "configuracion":
+                    await HandleConfigurationAsync(command);
+                    break;
+
+                case "desactivar-reportes":
+                    await HandleDisableReportsAsync(command);
+                    break;
+
+                case "eliminar-panel-personaje":
+                    await HandleDeleteCharacterPanelAsync(
                         command);
                     break;
             }
@@ -511,6 +600,112 @@ public class DiscordBotService
                     ephemeral: true);
                 break;
         }
+    }
+
+    private async Task HandleUnlinkAsync(
+    SocketSlashCommand command)
+    {
+        bool unlinked =
+            await _discordUserRepository.UnlinkAsync(
+                command.User.Id.ToString());
+
+        if (!unlinked)
+        {
+            await command.RespondAsync(
+                "No tenés ningún personaje vinculado.",
+                ephemeral: true);
+
+            return;
+        }
+
+        await command.RespondAsync(
+            "✅ Tu personaje fue desvinculado.\n" +
+            "Podés vincular otro usando `/vincular`.",
+            ephemeral: true);
+    }
+
+    private static async Task<SocketGuildUser?>
+    RequireAdministratorAsync(
+        SocketSlashCommand command)
+    {
+        if (command.User is not SocketGuildUser
+            guildUser)
+        {
+            await command.RespondAsync(
+                "Este comando solamente funciona " +
+                "dentro de un servidor.",
+                ephemeral: true);
+
+            return null;
+        }
+
+        if (!guildUser.GuildPermissions.ManageGuild)
+        {
+            await command.RespondAsync(
+                "Necesitás el permiso Administrar " +
+                "servidor.",
+                ephemeral: true);
+
+            return null;
+        }
+
+        return guildUser;
+    }
+
+    private static bool BotCanPublish(
+        SocketGuild guild,
+        SocketTextChannel channel,
+        ulong botUserId,
+        out string missingPermissions)
+    {
+        SocketGuildUser? botUser =
+            guild.GetUser(botUserId);
+
+        if (botUser is null)
+        {
+            missingPermissions =
+                "No se pudo localizar al bot.";
+
+            return false;
+        }
+
+        ChannelPermissions permissions =
+            botUser.GetPermissions(channel);
+
+        List<string> missing = [];
+
+        if (!permissions.ViewChannel)
+        {
+            missing.Add("Ver canal");
+        }
+
+        if (!permissions.SendMessages)
+        {
+            missing.Add("Enviar mensajes");
+        }
+
+        if (!permissions.EmbedLinks)
+        {
+            missing.Add("Insertar enlaces");
+        }
+
+        if (!permissions.ReadMessageHistory)
+        {
+            missing.Add("Leer historial");
+        }
+
+        missingPermissions =
+            string.Join(", ", missing);
+
+        return missing.Count == 0;
+    }
+
+    private static string FormatChannel(
+        string? channelId)
+    {
+        return string.IsNullOrWhiteSpace(channelId)
+            ? "No configurado"
+            : $"<#{channelId}>";
     }
 
     private async Task HandleConfigurePanelAsync(
@@ -630,25 +825,11 @@ public class DiscordBotService
     private async Task HandlePublishCharacterAsync(
     SocketSlashCommand command)
     {
-        if (command.User is not SocketGuildUser
-            guildUser)
+        SocketGuildUser? guildUser =
+            await RequireAdministratorAsync(command);
+
+        if (guildUser is null)
         {
-            await command.RespondAsync(
-                "Este comando solamente funciona " +
-                "dentro de un servidor.",
-                ephemeral: true);
-
-            return;
-        }
-
-        if (!guildUser.GuildPermissions
-            .ManageGuild)
-        {
-            await command.RespondAsync(
-                "Necesitás el permiso Administrar " +
-                "servidor.",
-                ephemeral: true);
-
             return;
         }
 
@@ -665,6 +846,24 @@ public class DiscordBotService
 
             return;
         }
+
+        if (!BotCanPublish(
+                guildUser.Guild,
+                channel,
+                _client.CurrentUser.Id,
+                out string missingPermissions))
+        {
+            await command.RespondAsync(
+                "Al bot le faltan estos permisos en " +
+                $"{channel.Mention}: " +
+                $"**{missingPermissions}**.",
+                ephemeral: true);
+
+            return;
+        }
+
+        await command.DeferAsync(
+            ephemeral: true);
 
         Embed embed =
             new EmbedBuilder()
@@ -688,13 +887,234 @@ public class DiscordBotService
                     emote: new Emoji("🥷"))
                 .Build();
 
-        await channel.SendMessageAsync(
-            embed: embed,
-            components: components);
+        string guildId =
+            guildUser.Guild.Id.ToString();
+
+        DiscordCharacterPanel? existing =
+            await _administrationRepository
+                .GetCharacterPanelAsync(guildId);
+
+        if (existing is not null &&
+            existing.IsActive &&
+            ulong.TryParse(
+                existing.ChannelId,
+                out ulong oldChannelId) &&
+            ulong.TryParse(
+                existing.MessageId,
+                out ulong oldMessageId) &&
+            _client.GetChannel(oldChannelId)
+                is IMessageChannel oldChannel)
+        {
+            try
+            {
+                IMessage? oldMessage =
+                    await oldChannel.GetMessageAsync(
+                        oldMessageId);
+
+                if (oldMessage is IUserMessage
+                    userMessage)
+                {
+                    if (oldChannelId == channel.Id)
+                    {
+                        await userMessage.ModifyAsync(
+                            properties =>
+                            {
+                                properties.Embed = embed;
+                                properties.Components =
+                                    components;
+                            });
+
+                        await command.FollowupAsync(
+                            $"✅ El panel existente fue " +
+                            $"actualizado en " +
+                            $"{channel.Mention}.",
+                            ephemeral: true);
+
+                        return;
+                    }
+
+                    await userMessage.DeleteAsync();
+                }
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine(
+                    $"No se pudo reemplazar el panel " +
+                    $"anterior: {exception.Message}");
+            }
+        }
+
+        IUserMessage newMessage =
+            await channel.SendMessageAsync(
+                embed: embed,
+                components: components);
+
+        await _administrationRepository
+            .SaveCharacterPanelAsync(
+                guildId,
+                channel.Id.ToString(),
+                newMessage.Id.ToString());
+
+        await command.FollowupAsync(
+            $"✅ Panel configurado en " +
+            $"{channel.Mention}.",
+            ephemeral: true);
+    }
+
+    private async Task HandleConfigurationAsync(
+    SocketSlashCommand command)
+    {
+        SocketGuildUser? guildUser =
+            await RequireAdministratorAsync(command);
+
+        if (guildUser is null)
+        {
+            return;
+        }
+
+        DiscordGuildConfiguration configuration =
+            await _administrationRepository
+                .GetConfigurationAsync(
+                    guildUser.Guild.Id.ToString());
+
+        string homeClan =
+            configuration.HomeClanId is null
+                ? "No configurado"
+                : $"{configuration.HomeClanName} " +
+                  $"(ID {configuration.HomeClanId})";
+
+        string reports =
+            configuration.WaveReportsActive
+                ? $"Activo en " +
+                  $"{FormatChannel(configuration.WaveReportChannelId)}\n" +
+                  $"Clan: {configuration.WaveReportClanName} " +
+                  $"(ID {configuration.WaveReportClanId})"
+                : "Desactivados";
+
+        string characterPanel =
+            configuration.CharacterPanelActive
+                ? $"Activo en " +
+                  $"{FormatChannel(configuration.CharacterPanelChannelId)}"
+                : "No configurado o desactivado";
+
+        Embed embed =
+            new EmbedBuilder()
+                .WithTitle(
+                    "⚙️ Configuración de PoteHub")
+                .WithColor(Color.Blue)
+                .AddField(
+                    "Ranking de clanes",
+                    FormatChannel(
+                        configuration
+                            .ClanRankingChannelId))
+                .AddField(
+                    "Ranking de miembros",
+                    FormatChannel(
+                        configuration
+                            .MemberRankingChannelId))
+                .AddField(
+                    "Clan principal",
+                    homeClan)
+                .AddField(
+                    "Panel Mi personaje",
+                    characterPanel)
+                .AddField(
+                    "Reportes de wave",
+                    reports)
+                .WithCurrentTimestamp()
+                .Build();
 
         await command.RespondAsync(
-            $"✅ Panel publicado en " +
-            $"{channel.Mention}.",
+            embed: embed,
+            ephemeral: true);
+    }
+
+    private async Task HandleDisableReportsAsync(
+    SocketSlashCommand command)
+    {
+        SocketGuildUser? guildUser =
+            await RequireAdministratorAsync(command);
+
+        if (guildUser is null)
+        {
+            return;
+        }
+
+        bool disabled =
+            await _administrationRepository
+                .DisableWaveReportsAsync(
+                    guildUser.Guild.Id.ToString());
+
+        await command.RespondAsync(
+            disabled
+                ? "✅ Los reportes automáticos fueron " +
+                  "desactivados."
+                : "Los reportes ya estaban desactivados " +
+                  "o nunca fueron configurados.",
+            ephemeral: true);
+    }
+
+    private async Task
+    HandleDeleteCharacterPanelAsync(
+        SocketSlashCommand command)
+    {
+        SocketGuildUser? guildUser =
+            await RequireAdministratorAsync(command);
+
+        if (guildUser is null)
+        {
+            return;
+        }
+
+        string guildId =
+            guildUser.Guild.Id.ToString();
+
+        DiscordCharacterPanel? panel =
+            await _administrationRepository
+                .GetCharacterPanelAsync(guildId);
+
+        if (panel is null || !panel.IsActive)
+        {
+            await command.RespondAsync(
+                "No hay un panel de personaje activo.",
+                ephemeral: true);
+
+            return;
+        }
+
+        if (ulong.TryParse(
+                panel.ChannelId,
+                out ulong channelId) &&
+            ulong.TryParse(
+                panel.MessageId,
+                out ulong messageId) &&
+            _client.GetChannel(channelId)
+                is IMessageChannel channel)
+        {
+            try
+            {
+                IMessage? message =
+                    await channel.GetMessageAsync(
+                        messageId);
+
+                if (message is not null)
+                {
+                    await message.DeleteAsync();
+                }
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine(
+                    $"No se pudo borrar el mensaje: " +
+                    $"{exception.Message}");
+            }
+        }
+
+        await _administrationRepository
+            .DisableCharacterPanelAsync(guildId);
+
+        await command.RespondAsync(
+            "✅ El panel de personaje fue eliminado.",
             ephemeral: true);
     }
 
@@ -737,6 +1157,21 @@ public class DiscordBotService
         {
             await command.RespondAsync(
                 "Tenés que indicar un canal y un clan.",
+                ephemeral: true);
+
+            return;
+        }
+
+        if (!BotCanPublish(
+        guildUser.Guild,
+        channel,
+        _client.CurrentUser.Id,
+        out string missingPermissions))
+        {
+            await command.RespondAsync(
+                "Al bot le faltan estos permisos en " +
+                $"{channel.Mention}: " +
+                $"**{missingPermissions}**.",
                 ephemeral: true);
 
             return;
@@ -940,6 +1375,23 @@ public class DiscordBotService
     {
         try
         {
+            bool allowed =
+            _cooldownService.TryAcquire(
+                component.User.Id,
+                component.Data.CustomId,
+                TimeSpan.FromSeconds(3),
+                out TimeSpan remaining);
+
+            if (!allowed)
+            {
+                await component.RespondAsync(
+                    $"Esperá {Math.Ceiling(remaining.TotalSeconds)} " +
+                    "segundos antes de volver a actualizar.",
+                    ephemeral: true);
+
+                return;
+            }
+
             if (component.Data.CustomId ==
                 "show_my_character")
             {

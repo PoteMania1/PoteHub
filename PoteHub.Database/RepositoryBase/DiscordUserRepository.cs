@@ -220,6 +220,43 @@ public class DiscordUserRepository : RepositoryBase
         return Convert.ToInt32(result) == 1;
     }
 
+    public async Task<bool> UnlinkAsync(
+    string discordId)
+    {
+        using SqliteConnection connection =
+            Database.CreateConnection();
+
+        await connection.OpenAsync();
+
+        using SqliteCommand command =
+            connection.CreateCommand();
+
+        command.CommandText =
+        """
+    UPDATE DiscordUsers
+
+    SET
+        IsActive = 0,
+        UpdatedAt = $updatedAt
+
+    WHERE DiscordId = $discordId
+      AND IsActive = 1;
+    """;
+
+        command.Parameters.AddWithValue(
+            "$discordId",
+            discordId);
+
+        command.Parameters.AddWithValue(
+            "$updatedAt",
+            DateTime.UtcNow.ToString("O"));
+
+        int affectedRows =
+            await command.ExecuteNonQueryAsync();
+
+        return affectedRows > 0;
+    }
+
     public async Task<MemberProfile?> GetProfileAsync(
     string discordId)
     {
