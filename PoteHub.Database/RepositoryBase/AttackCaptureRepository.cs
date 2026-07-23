@@ -367,56 +367,54 @@ public class AttackCaptureRepository
 
         command.CommandText =
         """
-        WITH SelectedWaves AS
+        WITH TargetEnd AS
         (
-            SELECT WaveId
-
+            SELECT EndTime
+        
             FROM Waves
-
+        
             WHERE SeasonId = $seasonId
               AND WaveId >= $startWaveId
-
+        
             ORDER BY WaveId
-
-            LIMIT $waveCount
+        
+            LIMIT 1 OFFSET $waveOffset
         )
-
+        
         SELECT
             w.WaveId,
             d.DayNumber,
             w.WaveNumber,
+            w.StartTime,
             m.MemberId,
             m.Name,
             mc.ReputationDifference,
-            mc.DetectedAt
-
+            sr.GeneratedAt
+        
         FROM MemberChanges mc
-
+        
         JOIN SyncRuns sr
             ON sr.SyncRunId = mc.SyncRunId
-
+        
         JOIN Waves w
             ON w.WaveId = sr.WaveId
-
+        
         JOIN Days d
             ON d.DayId = w.DayId
-
+        
         JOIN Members m
             ON m.MemberId = mc.MemberId
-
+        
+        CROSS JOIN TargetEnd target
+        
         WHERE mc.ClanId = $clanId
           AND mc.SeasonId = $seasonId
-          AND mc.SyncRunId > $startSyncRunId
+          AND mc.DetectedAt >= $startedAt
           AND mc.ReputationDifference > 0
-          AND w.WaveId IN
-          (
-              SELECT WaveId
-              FROM SelectedWaves
-          )
-
+          AND sr.GeneratedAt < target.EndTime
+        
         ORDER BY
-            w.WaveId,
-            mc.DetectedAt,
+            sr.GeneratedAt,
             mc.MemberChangeId;
         """;
 
@@ -433,12 +431,12 @@ public class AttackCaptureRepository
             session.StartWaveId);
 
         command.Parameters.AddWithValue(
-            "$startSyncRunId",
-            session.StartSyncRunId);
+            "$startedAt",
+            session.StartedAt.ToString("O"));
 
         command.Parameters.AddWithValue(
-            "$waveCount",
-            session.WaveCount);
+            "$waveOffset",
+            session.WaveCount - 1);
 
         using SqliteDataReader reader =
             await command.ExecuteReaderAsync();
@@ -451,15 +449,22 @@ public class AttackCaptureRepository
                     WaveId = reader.GetInt64(0),
                     DayNumber = reader.GetInt32(1),
                     WaveNumber = reader.GetInt32(2),
-                    MemberId = reader.GetInt32(3),
-                    MemberName = reader.GetString(4),
+
+                    WaveStartTime = DateTime.Parse(
+                    reader.GetString(3),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind),
+
+                    MemberId = reader.GetInt32(4),
+                    MemberName = reader.GetString(5),
 
                     ReputationAmount =
-                        reader.GetInt32(5),
+                    reader.GetInt32(6),
 
                     DetectedAt = DateTime.Parse(
-                        reader.GetString(6),
-                        CultureInfo.InvariantCulture)
+                    reader.GetString(7),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind)
                 });
         }
 

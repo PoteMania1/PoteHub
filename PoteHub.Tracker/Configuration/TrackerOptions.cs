@@ -3,7 +3,7 @@
 public class TrackerOptions
 {
     public TimeSpan SyncInterval { get; set; } =
-        TimeSpan.FromSeconds(30);
+        TimeSpan.FromMilliseconds(500);
 
     public int HttpMaxAttempts { get; set; } = 3;
 

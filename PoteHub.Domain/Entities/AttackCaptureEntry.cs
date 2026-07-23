@@ -8,6 +8,8 @@ public class AttackCaptureEntry
 
     public int WaveNumber { get; set; }
 
+    public DateTime WaveStartTime { get; set; }
+
     public int MemberId { get; set; }
 
     public string MemberName { get; set; } =

@@ -36,6 +36,9 @@ public class SyncService
     private readonly MemberMovementRepository
         _movementRepository;
 
+    private readonly DataRetentionRepository
+        _retentionRepository;
+
     public SyncService(
         NinjaSagaApiClient apiClient,
         DatabaseConnection database)
@@ -71,6 +74,9 @@ public class SyncService
 
         _movementRepository =
             new MemberMovementRepository(database);
+
+        _retentionRepository =
+            new DataRetentionRepository(database);
     }
 
     private async Task SynchronizeClanAsync(
@@ -674,10 +680,40 @@ public class SyncService
                 transaction);
 
         await _calendarRepository.FinalizePastWavesAsync(
-            season.SeasonId,
-            generatedAt,
-            connection,
-            transaction);
+    season.SeasonId,
+    generatedAt,
+    connection,
+    transaction);
+
+        RetentionResult retention =
+            await _retentionRepository.RunAsync(
+                season.SeasonId,
+                currentDay.DayId,
+                currentDay.DayNumber,
+                generatedAt,
+                connection,
+                transaction);
+
+        if (retention.DailyMaintenanceRan)
+        {
+            result.Messages.Add(
+                "Mantenimiento diario ejecutado. " +
+                $"Días resumidos: " +
+                $"{retention.SummarizedDays}. " +
+                $"Cambios de clanes eliminados: " +
+                $"{retention.DeletedClanChanges}. " +
+                $"Cambios de miembros eliminados: " +
+                $"{retention.DeletedMemberChanges}. " +
+                $"Sincronizaciones eliminadas: " +
+                $"{retention.DeletedSyncRuns}.");
+        }
+
+        if (retention.FinalizedSeasons > 0)
+        {
+            result.Messages.Add(
+                $"Temporadas finalizadas y compactadas: " +
+                $"{retention.FinalizedSeasons}.");
+        }
 
         SyncRun syncRun = new()
         {

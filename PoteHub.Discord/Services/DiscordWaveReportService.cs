@@ -142,8 +142,12 @@ public class DiscordWaveReportService
         else
         {
             foreach (MemberRankingPanelEntry member
-                     in report.Members)
+            in report.Members)
             {
+                members.AppendLine(
+                    $"**{member.Rank}. " +
+                    $"{member.MemberName}**");
+
                 members.AppendLine(
                     $"Ganada: " +
                     $"**+{member.WaveReputationGain:N0}** " +

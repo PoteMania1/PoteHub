@@ -11,6 +11,8 @@ namespace PoteHub.Discord.Services;
 
 public class DiscordBotService
 {
+    private const ulong PoteHubOwnerRoleId =
+        1528222091571367997;
     private readonly DiscordSocketClient _client;
     private readonly DiscordUserRepository
     _discordUserRepository;
@@ -727,8 +729,46 @@ public class DiscordBotService
         return guildUser;
     }
 
+    private static async Task<SocketGuildUser?>
+    RequireOwnerAsync(
+        SocketSlashCommand command)
+    {
+        if (command.User is not SocketGuildUser
+            guildUser)
+        {
+            await command.RespondAsync(
+                "Este comando solamente funciona " +
+                "dentro de un servidor.",
+                ephemeral: true);
+
+            return null;
+        }
+
+        bool isServerOwner =
+            guildUser.Guild.OwnerId ==
+            guildUser.Id;
+
+        bool hasOwnerRole =
+            guildUser.Roles.Any(
+                role =>
+                    role.Id ==
+                    PoteHubOwnerRoleId);
+
+        if (!isServerOwner && !hasOwnerRole)
+        {
+            await command.RespondAsync(
+                "⛔ Este comando solamente puede ser " +
+                "utilizado por los owners de PoteHub.",
+                ephemeral: true);
+
+            return null;
+        }
+
+        return guildUser;
+    }
+
     private static bool BotCanPublish(
-        SocketGuild guild,
+            SocketGuild guild,
         SocketTextChannel channel,
         ulong botUserId,
         out string missingPermissions)
@@ -786,30 +826,16 @@ public class DiscordBotService
     private async Task HandleConfigurePanelAsync(
     SocketSlashCommand command)
     {
-        if (command.User is not SocketGuildUser
-            guildUser)
+        SocketGuildUser? guildUser =
+            await RequireOwnerAsync(command);
+
+        if (guildUser is null)
         {
-            await command.RespondAsync(
-                "Este comando solamente funciona " +
-                "dentro de un servidor.",
-                ephemeral: true);
-
-            return;
-        }
-
-        if (!guildUser.GuildPermissions
-            .ManageGuild)
-        {
-            await command.RespondAsync(
-                "Necesitás el permiso Administrar " +
-                "servidor para configurar paneles.",
-                ephemeral: true);
-
             return;
         }
 
         SocketSlashCommandDataOption? typeOption =
-            command.Data.Options.FirstOrDefault(
+                command.Data.Options.FirstOrDefault(
                 option => option.Name == "tipo");
 
         SocketSlashCommandDataOption? channelOption =
@@ -901,7 +927,7 @@ public class DiscordBotService
     SocketSlashCommand command)
     {
         SocketGuildUser? guildUser =
-            await RequireAdministratorAsync(command);
+            await RequireOwnerAsync(command);
 
         if (guildUser is null)
         {
@@ -1108,7 +1134,7 @@ public class DiscordBotService
     SocketSlashCommand command)
     {
         SocketGuildUser? guildUser =
-            await RequireAdministratorAsync(command);
+            await RequireOwnerAsync(command);
 
         if (guildUser is null)
         {
@@ -1131,10 +1157,10 @@ public class DiscordBotService
 
     private async Task
     HandleDeleteCharacterPanelAsync(
-        SocketSlashCommand command)
+    SocketSlashCommand command)
     {
         SocketGuildUser? guildUser =
-            await RequireAdministratorAsync(command);
+            await RequireOwnerAsync(command);
 
         if (guildUser is null)
         {
@@ -1194,32 +1220,18 @@ public class DiscordBotService
     }
 
     private async Task HandleConfigureReportsAsync(
-        SocketSlashCommand command)
+    SocketSlashCommand command)
     {
-        if (command.User is not SocketGuildUser
-            guildUser)
+        SocketGuildUser? guildUser =
+            await RequireOwnerAsync(command);
+
+        if (guildUser is null)
         {
-            await command.RespondAsync(
-                "Este comando solamente funciona " +
-                "dentro de un servidor.",
-                ephemeral: true);
-
-            return;
-        }
-
-        if (!guildUser.GuildPermissions
-            .ManageGuild)
-        {
-            await command.RespondAsync(
-                "Necesitás el permiso Administrar " +
-                "servidor.",
-                ephemeral: true);
-
             return;
         }
 
         SocketSlashCommandDataOption? channelOption =
-            command.Data.Options.FirstOrDefault(
+                command.Data.Options.FirstOrDefault(
                 option => option.Name == "canal");
 
         SocketSlashCommandDataOption? clanOption =
@@ -1723,25 +1735,11 @@ public class DiscordBotService
     private async Task HandleCompareClansAsync(
     SocketSlashCommand command)
     {
-        if (command.User is not SocketGuildUser
-            guildUser)
+        SocketGuildUser? guildUser =
+            await RequireOwnerAsync(command);
+
+        if (guildUser is null)
         {
-            await command.RespondAsync(
-                "Este comando solamente funciona " +
-                "dentro de un servidor.",
-                ephemeral: true);
-
-            return;
-        }
-
-        if (!guildUser.GuildPermissions
-            .ManageGuild)
-        {
-            await command.RespondAsync(
-                "Necesitás el permiso Administrar " +
-                "servidor para iniciar seguimientos.",
-                ephemeral: true);
-
             return;
         }
 
@@ -1804,25 +1802,11 @@ public class DiscordBotService
     private async Task HandleStopComparisonAsync(
     SocketSlashCommand command)
     {
-        if (command.User is not SocketGuildUser
-            guildUser)
+        SocketGuildUser? guildUser =
+            await RequireOwnerAsync(command);
+
+        if (guildUser is null)
         {
-            await command.RespondAsync(
-                "Este comando solamente funciona " +
-                "dentro de un servidor.",
-                ephemeral: true);
-
-            return;
-        }
-
-        if (!guildUser.GuildPermissions
-            .ManageGuild)
-        {
-            await command.RespondAsync(
-                "Necesitás el permiso Administrar " +
-                "servidor para detener seguimientos.",
-                ephemeral: true);
-
             return;
         }
 
@@ -1888,7 +1872,7 @@ public class DiscordBotService
     SocketSlashCommand command)
     {
         SocketGuildUser? guildUser =
-            await RequireAdministratorAsync(command);
+            await RequireOwnerAsync(command);
 
         if (guildUser is null)
         {
@@ -1968,10 +1952,10 @@ public class DiscordBotService
     }
 
     private async Task HandleStopAttackCaptureAsync(
-        SocketSlashCommand command)
+    SocketSlashCommand command)
     {
         SocketGuildUser? guildUser =
-            await RequireAdministratorAsync(command);
+            await RequireOwnerAsync(command);
 
         if (guildUser is null)
         {
@@ -1989,15 +1973,32 @@ public class DiscordBotService
             return;
         }
 
-        bool cancelled =
-            await _attackCaptureRepository.CancelAsync(
-                guildUser.Guild.Id.ToString(),
-                channel.Id.ToString());
+        await command.DeferAsync(
+    ephemeral: true);
 
-        await command.RespondAsync(
-            cancelled
-                ? "⛔ El registro de ataques fue cancelado."
-                : "No existe un registro activo en este canal.",
-            ephemeral: false);
+        try
+        {
+            bool finished =
+                await _attackCaptureService.FinishNowAsync(
+                    _client,
+                    guildUser.Guild.Id.ToString(),
+                    channel.Id.ToString());
+
+            await command.FollowupAsync(
+                finished
+                    ? "✅ Registro cerrado. El archivo con " +
+                      "los datos recopilados fue publicado " +
+                      "en este canal."
+                    : "No existe un registro activo en " +
+                      "este canal.",
+                ephemeral: true);
+        }
+        catch (Exception exception)
+        {
+            await command.FollowupAsync(
+                "No se pudo finalizar el registro: " +
+                exception.Message,
+                ephemeral: true);
+        }
     }
 }

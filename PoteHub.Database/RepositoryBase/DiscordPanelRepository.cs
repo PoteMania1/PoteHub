@@ -688,7 +688,11 @@ public class DiscordPanelRepository
         w.StartTime,
         w.EndTime,
         w.Status,
-        sr.GeneratedAt
+
+        COALESCE(
+            w.LastGeneratedAt,
+            sr.GeneratedAt
+        ) AS LastGeneratedAt
 
     FROM SyncRuns sr
 

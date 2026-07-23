@@ -25,7 +25,8 @@ public class DatabaseMigrator
             new Migration008DiscordAutomation(),
             new Migration009DiscordSecurity(),
             new Migration010ComparisonMemberMessages(),
-            new Migration011AttackCaptureSessions()
+            new Migration011AttackCaptureSessions(),
+            new Migration012DailySummariesAndRetention()
         ];
     }
 

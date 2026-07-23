@@ -959,10 +959,12 @@ public class DiscordPanelService
         StringBuilder description = new();
 
         double elapsedMinutes =
-            (
-                data.LastUpdatedAt -
-                data.WaveStartTime
-            ).TotalMinutes;
+        data.WaveStatus is "Complete" or "Incomplete"
+        ? 30
+        : (
+            data.LastUpdatedAt -
+            data.WaveStartTime
+          ).TotalMinutes;
 
         elapsedMinutes = Math.Clamp(
             elapsedMinutes,
@@ -1157,10 +1159,12 @@ public class DiscordPanelService
         MemberRankingPanelData secondMembers)
     {
         double elapsedMinutes =
-            (
+            context.WaveStatus is "Complete" or "Incomplete"
+            ? 30
+            : (
                 context.LastUpdatedAt -
                 context.WaveStartTime
-            ).TotalMinutes;
+              ).TotalMinutes;
 
         elapsedMinutes = Math.Clamp(
             elapsedMinutes,
@@ -1168,7 +1172,7 @@ public class DiscordPanelService
             30);
 
         string firstMemberList =
-    BuildComparisonMemberList(
+        BuildComparisonMemberList(
         firstMembers.Members.Take(25),
         elapsedMinutes,
         startPosition: 1);

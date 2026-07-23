@@ -9,7 +9,7 @@ namespace PoteHub.Discord.Services;
 public class AttackCaptureService
 {
     private static readonly TimeSpan CheckInterval =
-        TimeSpan.FromSeconds(5);
+        TimeSpan.FromSeconds(2);
 
     private readonly AttackCaptureRepository
         _repository;
@@ -65,6 +65,33 @@ public class AttackCaptureService
             "Registrador de ataques detenido.");
     }
 
+    public async Task<bool> FinishNowAsync(
+    DiscordSocketClient client,
+    string guildId,
+    string channelId)
+    {
+        List<AttackCaptureSession> sessions =
+            await _repository.GetActiveAsync();
+
+        AttackCaptureSession? session =
+            sessions.FirstOrDefault(
+                current =>
+                    current.GuildId == guildId &&
+                    current.ChannelId == channelId);
+
+        if (session is null)
+        {
+            return false;
+        }
+
+        await PublishSessionAsync(
+            client,
+            session,
+            wasStoppedManually: true);
+
+        return true;
+    }
+
     private async Task CompleteFinishedSessionsAsync(
         DiscordSocketClient client,
         CancellationToken cancellationToken)
@@ -87,132 +114,212 @@ public class AttackCaptureService
                 continue;
             }
 
-            if (!ulong.TryParse(
-                    session.ChannelId,
-                    out ulong channelId))
-            {
-                continue;
-            }
-
-            if (client.GetChannel(channelId)
-                is not IMessageChannel channel)
-            {
-                continue;
-            }
-
-            List<AttackCaptureEntry> entries =
-                await _repository.GetEntriesAsync(
-                    session);
-
-            byte[] fileContents =
-                BuildTextFile(session, entries);
-
-            using MemoryStream stream =
-                new(fileContents);
-
-            string fileName =
-                $"registro-clan-{session.ClanId}-" +
-                $"waves-{session.WaveCount}.txt";
-
-            await channel.SendFileAsync(
-                stream,
-                fileName,
-                $"✅ Registro finalizado para " +
-                $"**{session.ClanName}**.\n" +
-                $"Waves registradas: " +
-                $"**{session.WaveCount}**.");
-
-            await _repository.MarkCompletedAsync(
-                session.SessionId);
+            await PublishSessionAsync(
+                client,
+                session,
+                wasStoppedManually: false);
         }
     }
 
-    private static byte[] BuildTextFile(
-        AttackCaptureSession session,
-        List<AttackCaptureEntry> entries)
+    private async Task PublishSessionAsync(
+    DiscordSocketClient client,
+    AttackCaptureSession session,
+    bool wasStoppedManually)
     {
-        StringBuilder text = new();
-
-        text.AppendLine(
-            "PoteHub - Registro de actividad");
-
-        text.AppendLine(
-            $"Clan: {session.ClanName} " +
-            $"(ID {session.ClanId})");
-
-        text.AppendLine(
-            $"Temporada: {session.SeasonName}");
-
-        text.AppendLine(
-            $"Waves solicitadas: {session.WaveCount}");
-
-        text.AppendLine(
-            $"Inicio del registro: " +
-            $"{session.StartedAt:yyyy-MM-dd HH:mm:ss} UTC");
-
-        text.AppendLine();
-
-        if (entries.Count == 0)
+        if (!ulong.TryParse(
+                session.ChannelId,
+                out ulong channelId))
         {
-            text.AppendLine(
-                "No se detectaron incrementos de " +
-                "reputación durante el registro.");
-
-            return EncodeWithBom(text.ToString());
+            throw new InvalidOperationException(
+                "El ID del canal del registro no es válido.");
         }
 
-        foreach (IGrouping<long, AttackCaptureEntry>
-                 waveGroup in entries.GroupBy(
-                     entry => entry.WaveId))
+        if (client.GetChannel(channelId)
+            is not IMessageChannel channel)
         {
-            AttackCaptureEntry wave =
-                waveGroup.First();
+            throw new InvalidOperationException(
+                "No se encontró el canal del registro.");
+        }
 
-            text.AppendLine(
-                "========================================");
+        List<AttackCaptureEntry> entries =
+        await _repository.GetEntriesAsync(
+        session);
 
-            text.AppendLine(
-                $"{session.SeasonName} - " +
-                $"Día {wave.DayNumber} - " +
-                $"Wave {wave.WaveNumber}");
+        Console.WriteLine(
+            $"Registro {session.SessionId}: " +
+            $"{entries.Count} cambios positivos encontrados " +
+            $"para {session.ClanName} desde " +
+            $"{session.StartedAt:HH:mm:ss} UTC.");
 
-            text.AppendLine(
-                "========================================");
+                byte[] fileContents =
+            BuildCsvFile(session, entries);
 
-            text.AppendLine();
+        using MemoryStream stream =
+            new(fileContents);
 
-            foreach (IGrouping<int, AttackCaptureEntry>
-                     memberGroup in waveGroup
-                         .GroupBy(entry => entry.MemberId)
-                         .OrderByDescending(
-                             group => group.Sum(
-                                 entry =>
-                                     entry.ReputationAmount)))
+        string fileName =
+            $"registro-clan-{session.ClanId}-" +
+            $"waves-{session.WaveCount}.csv";
+
+        string message =
+            wasStoppedManually
+                ? "⏹️ Registro detenido manualmente para " +
+                  $"**{session.ClanName}**.\n" +
+                  "El archivo contiene toda la actividad " +
+                  "recopilada hasta este momento."
+                : "✅ Registro finalizado para " +
+                  $"**{session.ClanName}**.\n" +
+                  $"Waves registradas: " +
+                  $"**{session.WaveCount}**.";
+
+        await channel.SendFileAsync(
+            stream,
+            fileName,
+            message);
+
+        await _repository.MarkCompletedAsync(
+            session.SessionId);
+    }
+    private static byte[] BuildCsvFile(
+    AttackCaptureSession session,
+    List<AttackCaptureEntry> entries)
+    {
+        const int intervalMilliseconds = 500;
+        const int waveDurationSeconds = 1800;
+
+        int totalIntervals =
+            waveDurationSeconds * 1000 /
+            intervalMilliseconds;
+
+        StringBuilder csv = new();
+
+        csv.Append(
+            "Temporada;Dia;Wave;MiembroId;" +
+            "Miembro;NumeroAtaques");
+
+        for (int interval = 1;
+             interval <= totalIntervals;
+             interval++)
+        {
+            decimal elapsedSeconds =
+                interval *
+                intervalMilliseconds /
+                1000m;
+
+            csv.Append(';');
+
+            csv.Append(
+                elapsedSeconds.ToString(
+                    "0.0",
+                    System.Globalization
+                        .CultureInfo.InvariantCulture));
+
+            csv.Append(" segundos");
+        }
+
+        csv.AppendLine(";ReputacionTotal");
+
+        IEnumerable<IGrouping<
+            (long WaveId, int MemberId),
+            AttackCaptureEntry>> groups =
+            entries
+                .GroupBy(
+                    entry => (
+                        entry.WaveId,
+                        entry.MemberId))
+                .OrderBy(
+                    group =>
+                        group.First().WaveId)
+                .ThenBy(
+                    group =>
+                        group.First().MemberName);
+
+        foreach (IGrouping<
+                 (long WaveId, int MemberId),
+                 AttackCaptureEntry> group
+                 in groups)
+        {
+            List<AttackCaptureEntry> attacks =
+                group
+                    .OrderBy(
+                        entry => entry.DetectedAt)
+                    .ToList();
+
+            AttackCaptureEntry first =
+                attacks.First();
+
+            int[] reputationByInterval =
+                new int[totalIntervals];
+
+            foreach (AttackCaptureEntry attack
+                     in attacks)
             {
-                string memberName =
-                    memberGroup.First().MemberName;
+                double elapsedMilliseconds =
+                    (attack.DetectedAt -
+                     attack.WaveStartTime)
+                    .TotalMilliseconds;
 
-                List<int> attacks =
-                    memberGroup
-                        .Select(
-                            entry =>
-                                entry.ReputationAmount)
-                        .ToList();
+                int intervalIndex =
+                    (int)Math.Ceiling(
+                        elapsedMilliseconds /
+                        intervalMilliseconds) - 1;
 
-                text.Append(
-                    $"Ataques: {attacks.Count} | ");
+                intervalIndex =
+                    Math.Clamp(
+                        intervalIndex,
+                        0,
+                        totalIntervals - 1);
 
-                text.Append(
-                    $"{memberName}: ");
-
-                text.AppendLine(
-                    string.Join(" ", attacks));
+                reputationByInterval[intervalIndex] +=
+                    attack.ReputationAmount;
             }
 
-            text.AppendLine();
+            int totalReputation =
+                reputationByInterval.Sum();
+
+            int attackCount =
+                reputationByInterval.Count(
+                    reputation => reputation > 0);
+
+            csv.Append(
+                EscapeCsv(session.SeasonName));
+
+            csv.Append(';');
+            csv.Append(first.DayNumber);
+            csv.Append(';');
+            csv.Append(first.WaveNumber);
+            csv.Append(';');
+            csv.Append(first.MemberId);
+            csv.Append(';');
+
+            csv.Append(
+                EscapeCsv(first.MemberName));
+
+            csv.Append(';');
+            csv.Append(attackCount);
+
+            foreach (int reputation
+                     in reputationByInterval)
+            {
+                csv.Append(';');
+                csv.Append(reputation);
+            }
+
+            csv.Append(';');
+            csv.Append(totalReputation);
+            csv.AppendLine();
         }
 
-        return EncodeWithBom(text.ToString());
+        return EncodeWithBom(csv.ToString());
+    }
+
+    private static string EscapeCsv(
+        string value)
+    {
+        string escaped =
+            value.Replace("\"", "\"\"");
+
+        return $"\"{escaped}\"";
     }
 
     private static byte[] EncodeWithBom(
