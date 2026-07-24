@@ -345,7 +345,7 @@ public class DiscordPanelService
     await _repository
         .GetCurrentMemberRankingAsync(
             panel.ClanId.Value,
-            limit: 25,
+            limit: 40,
             rankByWave: true);
 
         if (data is null ||
